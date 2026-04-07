@@ -10,10 +10,10 @@ An open-source MCP (Model Context Protocol) server that connects Claude directly
 
 Once connected, you can ask things like:
 
-- *"What is the average ENERGY STAR score for my IMPACT Fund properties?"*
+- *"What is the average ENERGY STAR score for my office properties?"*
 - *"Which of my properties are below a score of 50?"*
-- *"Show me energy use intensity across my Senior Housing assets, ranked worst to best."*
-- *"How many of my directly managed properties have ENERGY STAR certification?"*
+- *"Show me energy use intensity across my multifamily assets, ranked worst to best."*
+- *"How many of my properties have ENERGY STAR certification?"*
 - *"Give me a portfolio summary — scores and EUI across all my properties."*
 
 ---
@@ -61,8 +61,8 @@ You need to enable web services on your ESPM account before the API will work.
 ### Step 2 — Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/espm-mcp.git
-cd espm-mcp
+git clone https://github.com/nikmirando1/ESPM_MCP.git
+cd ESPM_MCP
 npm install
 ```
 
@@ -94,7 +94,7 @@ Add this entry (update the path to where you cloned the repo):
   "mcpServers": {
     "espm": {
       "command": "node",
-      "args": ["/absolute/path/to/espm-mcp/src/index.js"]
+      "args": ["/absolute/path/to/ESPM_MCP/src/index.js"]
     }
   }
 }
@@ -114,7 +114,7 @@ Restart Claude Desktop. You'll see the ESPM tools available. Start asking questi
 | `list_properties` | List all property IDs in your account |
 | `get_property` | Get details for a specific property |
 | `get_property_metrics` | Get score, EUI, and GHG emissions for a property |
-| `list_property_groups` | List all your groups (APG, IMPACT Fund, etc.) |
+| `list_property_groups` | List all your property groups |
 | `get_property_group` | Get details for a specific group |
 | `get_group_score_summary` | Average score, min/max, and full breakdown for a group |
 | `get_portfolio_summary` | Portfolio-wide summary across all properties |

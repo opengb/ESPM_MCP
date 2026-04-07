@@ -1,0 +1,23 @@
+{
+  "name": "espm-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Energy Star Portfolio Manager - query your portfolio with Claude",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "espm-mcp": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "xml2js": "^0.6.2",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["mcp", "energy-star", "portfolio-manager", "espm", "sustainability", "cre"],
+  "license": "MIT"
+}

@@ -1,0 +1,156 @@
+# ESPM MCP — Energy Star Portfolio Manager for Claude
+
+An open-source MCP (Model Context Protocol) server that connects Claude directly to your Energy Star Portfolio Manager account. Ask questions about your portfolio in plain language instead of exporting spreadsheets.
+
+> Built by Nikolas Mirando as an independent prototype exploring AI + sustainability data infrastructure in CRE.
+
+---
+
+## What you can ask Claude
+
+Once connected, you can ask things like:
+
+- *"What is the average ENERGY STAR score for my IMPACT Fund properties?"*
+- *"Which of my properties are below a score of 50?"*
+- *"Show me energy use intensity across my Senior Housing assets, ranked worst to best."*
+- *"How many of my directly managed properties have ENERGY STAR certification?"*
+- *"Give me a portfolio summary — scores and EUI across all my properties."*
+
+---
+
+## How it works
+
+Your credentials stay **on your machine**. The MCP server runs locally, calls the ESPM API using your credentials, and returns your data to Claude. Nothing touches any third-party server.
+
+```
+Claude (your question)
+  → MCP server (runs locally on your machine)
+    → ESPM API (using your credentials from .env)
+      → Your portfolio data only
+        → Claude answers your question
+```
+
+---
+
+## Requirements
+
+- [Node.js](https://nodejs.org) v18 or higher
+- [Claude Desktop](https://claude.ai/download)
+- An Energy Star Portfolio Manager account with API access enabled (see below)
+
+---
+
+## Setup
+
+### Step 1 — Enable API access in ESPM
+
+You need to enable web services on your ESPM account before the API will work.
+
+**For the test environment (try it immediately with sample data):**
+1. Log in to the [ESPM Test environment](https://portfoliomanager.energystar.gov/pm/login_test.html)
+2. Go to **Account Settings** → **Software Development** tab
+3. Select **"Yes"** for *"Will this account be used to test web services?"*
+4. Click **Start Using the Test Environment**
+
+**For your live portfolio (requires EPA approval):**
+1. Log in to [Portfolio Manager](https://portfoliomanager.energystar.gov)
+2. Go to **Account Settings** → **Software Development** tab
+3. Fill out the registration form to request live API access
+4. EPA will review and approve — typically within a few business days
+
+### Step 2 — Clone and install
+
+```bash
+git clone https://github.com/YOUR_USERNAME/espm-mcp.git
+cd espm-mcp
+npm install
+```
+
+### Step 3 — Add your credentials
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in your ESPM username and password:
+
+```
+ESPM_USERNAME=your_username
+ESPM_PASSWORD=your_password
+ESPM_ENV=test   # change to "live" once you have live API access
+```
+
+### Step 4 — Connect to Claude Desktop
+
+Open your Claude Desktop config file:
+
+- **Mac:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+Add this entry (update the path to where you cloned the repo):
+
+```json
+{
+  "mcpServers": {
+    "espm": {
+      "command": "node",
+      "args": ["/absolute/path/to/espm-mcp/src/index.js"]
+    }
+  }
+}
+```
+
+### Step 5 — Restart Claude Desktop and start asking
+
+Restart Claude Desktop. You'll see the ESPM tools available. Start asking questions about your portfolio.
+
+---
+
+## Available tools
+
+| Tool | What it does |
+|------|-------------|
+| `get_account` | Confirm you're connected and see your account info |
+| `list_properties` | List all property IDs in your account |
+| `get_property` | Get details for a specific property |
+| `get_property_metrics` | Get score, EUI, and GHG emissions for a property |
+| `list_property_groups` | List all your groups (APG, IMPACT Fund, etc.) |
+| `get_property_group` | Get details for a specific group |
+| `get_group_score_summary` | Average score, min/max, and full breakdown for a group |
+| `get_portfolio_summary` | Portfolio-wide summary across all properties |
+
+---
+
+## Cost
+
+- **This repo:** Free
+- **ESPM API:** Free
+- **Claude Desktop:** Requires a Claude subscription (Pro or above)
+- **Hosting:** None — runs entirely on your machine
+
+---
+
+## Privacy
+
+Your ESPM credentials are stored only in the `.env` file on your local machine. They are never transmitted to any server other than the official ESPM API (`portfoliomanager.energystar.gov`). This MCP has no backend, no telemetry, and no external dependencies beyond the ESPM API itself.
+
+---
+
+## A note on ESPM's future
+
+As of early 2026, there is ongoing uncertainty around federal funding for the ENERGY STAR program. This MCP was partly built to illustrate a broader point: the AI tooling is ready, the data access layer is the bottleneck. Whether ESPM continues as-is or evolves, the pattern demonstrated here — connecting sustainability data to conversational AI — is one the CRE industry should be building toward.
+
+---
+
+## Contributing
+
+PRs welcome. Particularly interested in:
+- Additional metrics endpoints (water, waste, carbon)
+- Support for sharing/connection workflows
+- Better error handling for large portfolios
+
+---
+
+## License
+
+MIT

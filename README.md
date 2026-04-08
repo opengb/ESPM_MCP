@@ -21,7 +21,7 @@ Once connected, you can ask things like:
 ## How it works
 
 Your credentials stay **on your machine**. The MCP server runs locally, calls the ESPM API using your credentials, and returns your data to Claude. Nothing touches any third-party server.
-For demonstration and educational purposes â€” not an official system or compliance tool. Users authenticate with their own ENERGY STAR credentials locally; no data is stored or transmitted by this project.
+For demonstration and educational purposes only. This is not an official ENERGY STAR, EPA, or employer-sponsored system. Users authenticate with their own ENERGY STAR credentials locally; no data is stored or transmitted by this project.
 
 ```
 Claude (your question)
@@ -70,7 +70,7 @@ npm install
 ### Step 3 — Add your credentials
 
 ```bash
-cp .env.example .env
+cp env.example .env
 ```
 
 Open `.env` and fill in your ESPM username and password:
@@ -120,6 +120,7 @@ Restart Claude Desktop. You'll see the ESPM tools available. Start asking questi
 | `get_property_group` | Get details for a specific group |
 | `get_group_score_summary` | Average score, min/max, and full breakdown for a group |
 | `get_portfolio_summary` | Portfolio-wide summary across all properties |
+| `get_energy_star_certification_summary` | Count properties certified in a specific year using ESPM certification metrics |
 
 ---
 
@@ -140,7 +141,7 @@ Your ESPM credentials are stored only in the `.env` file on your local machine. 
 
 ## A note on ESPM's future
 
-As of early 2026, there is ongoing uncertainty around federal funding for the ENERGY STAR program. This MCP was partly built to illustrate a broader point: the AI tooling is ready, the data access layer is the bottleneck. Whether ESPM continues as-is or evolves, the pattern demonstrated here — connecting sustainability data to conversational AI — is one the CRE industry should be building toward.
+As of early 2026, there is ongoing uncertainty around federal funding for the ENERGY STAR program. This MCP was partly built to illustrate a broader point: the AI tooling is ready, but the data access layer is often the bottleneck. Whether ESPM continues as-is or evolves, the pattern demonstrated here, connecting sustainability data to conversational AI, is one the CRE industry should be building toward.
 
 ---
 

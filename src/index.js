@@ -648,22 +648,59 @@ function isAggregatedMeter(meter) {
 async function suspiciousDataCheck(propertyId, accountName) {
   const steps = [];
 
-  // STEP 1: Get property details
+  // STEP 1: Get property details (try all accounts if needed)
   steps.push({ check: "Get property details", status: "running" });
   let property;
-  try {
-    property = await getProperty(propertyId, accountName);
-    steps[steps.length - 1].status = "done";
-    steps[steps.length - 1].result = {
-      name: property.name,
-      address: property.address,
-      primaryFunction: property.primaryFunction,
-    };
-  } catch (err) {
-    steps[steps.length - 1].status = "error";
-    steps[steps.length - 1].result = err.message;
-    return { propertyId, steps, outcome: "error", message: `Could not retrieve property: ${err.message}` };
+  let resolvedAccountName = accountName;
+
+  if (accountName) {
+    // Specific account requested — try only that one
+    try {
+      property = await getProperty(propertyId, accountName);
+    } catch (err) {
+      steps[steps.length - 1].status = "error";
+      steps[steps.length - 1].result = err.message;
+      if (err.message.includes("404")) {
+        return {
+          propertyId,
+          steps,
+          outcome: "error",
+          message: `Property ${propertyId} not found using ESPM account "${accountName}". Verify the property ID is correct and that it has been shared with this account.`,
+        };
+      }
+      return { propertyId, steps, outcome: "error", message: `Could not retrieve property: ${err.message}` };
+    }
+  } else {
+    // No account specified — try all available accounts
+    const triedAccounts = [];
+    for (const [name] of accounts) {
+      try {
+        property = await getProperty(propertyId, name);
+        resolvedAccountName = name;
+        break;
+      } catch (err) {
+        triedAccounts.push(name);
+      }
+    }
+    if (!property) {
+      steps[steps.length - 1].status = "error";
+      steps[steps.length - 1].result = `Property not found in any account`;
+      return {
+        propertyId,
+        steps,
+        outcome: "error",
+        message: `Property ${propertyId} not found. Tried ESPM account(s): ${triedAccounts.join(", ")}. Verify the property ID is correct and that it has been shared with one of these accounts.`,
+      };
+    }
   }
+
+  steps[steps.length - 1].status = "done";
+  steps[steps.length - 1].result = {
+    name: property.name,
+    address: property.address,
+    primaryFunction: property.primaryFunction,
+    account: resolvedAccountName || accounts.keys().next().value,
+  };
 
   const propertyType = property.primaryFunction || "Unknown";
 
@@ -672,7 +709,7 @@ async function suspiciousDataCheck(propertyId, accountName) {
   let metersResult;
   let hasMeterAccess = false;
   try {
-    metersResult = await listPropertyMeters(propertyId, accountName);
+    metersResult = await listPropertyMeters(propertyId, resolvedAccountName);
     hasMeterAccess = metersResult.meterCount > 0;
     steps[steps.length - 1].status = "done";
     steps[steps.length - 1].result = hasMeterAccess
@@ -691,7 +728,7 @@ async function suspiciousDataCheck(propertyId, accountName) {
     // STEP A1: Check BC Hydro connection
     steps.push({ check: "Check if property is shared with BC Hydro", status: "running" });
     try {
-      const customers = await listConnectedCustomers(accountName);
+      const customers = await listConnectedCustomers(resolvedAccountName);
       const bcHydroCustomer = customers.find((c) => isBcHydroSource(c.name));
       steps[steps.length - 1].status = "done";
 
@@ -747,7 +784,7 @@ async function suspiciousDataCheck(propertyId, accountName) {
       continue;
     }
     try {
-      const consumption = await getMeterConsumptionData(meter.id, null, null, accountName);
+      const consumption = await getMeterConsumptionData(meter.id, null, null, resolvedAccountName);
       const bcHydroEntries = consumption.entries.filter(
         (e) => isBcHydroSource(e.audit?.createdBy) || isBcHydroSource(e.audit?.lastUpdatedBy)
       );

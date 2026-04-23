@@ -11,8 +11,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { parseStringPromise } from "xml2js";
 import { readFileSync, existsSync } from "fs";
@@ -628,11 +626,180 @@ async function listConnectedCustomers(accountName) {
   }));
 }
 
+
+function isBcHydroSource(auditField) {
+  if (!auditField) return false;
+  const lower = String(auditField).toLowerCase();
+  return lower.includes("bc hydro") || lower.includes("bchydro");
+}
+
+function isAggregatedMeter(meter) {
+  if (meter.aggregateMeter === true || meter.aggregateMeter === "true") return true;
+  if (!meter.name) return false;
+  const lower = meter.name.toLowerCase();
+  return (
+    lower.includes("aggregated") ||
+    lower.includes("suites") ||
+    lower.includes("units") ||
+    lower.includes("residents")
+  );
+}
+
+async function suspiciousDataCheck(propertyId, accountName) {
+  const steps = [];
+
+  // STEP 1: Get property details
+  steps.push({ check: "Get property details", status: "running" });
+  let property;
+  try {
+    property = await getProperty(propertyId, accountName);
+    steps[steps.length - 1].status = "done";
+    steps[steps.length - 1].result = {
+      name: property.name,
+      address: property.address,
+      primaryFunction: property.primaryFunction,
+    };
+  } catch (err) {
+    steps[steps.length - 1].status = "error";
+    steps[steps.length - 1].result = err.message;
+    return { propertyId, steps, outcome: "error", message: `Could not retrieve property: ${err.message}` };
+  }
+
+  const propertyType = property.primaryFunction || "Unknown";
+
+  // STEP 2: Check meter access
+  steps.push({ check: "Check meter access", status: "running" });
+  let metersResult;
+  let hasMeterAccess = false;
+  try {
+    metersResult = await listPropertyMeters(propertyId, accountName);
+    hasMeterAccess = metersResult.meterCount > 0;
+    steps[steps.length - 1].status = "done";
+    steps[steps.length - 1].result = hasMeterAccess
+      ? `Found ${metersResult.meterCount} meter(s)`
+      : "No meters found";
+  } catch (err) {
+    steps[steps.length - 1].status = "done";
+    steps[steps.length - 1].result = `No meter access (${err.message})`;
+    hasMeterAccess = false;
+  }
+
+  // ─── BRANCH A: No meter access ───
+  if (!hasMeterAccess) {
+    steps[steps.length - 1].nextAction = "No meter access → checking if property is shared with BC Hydro";
+
+    // STEP A1: Check BC Hydro connection
+    steps.push({ check: "Check if property is shared with BC Hydro", status: "running" });
+    try {
+      const customers = await listConnectedCustomers(accountName);
+      const bcHydroCustomer = customers.find((c) => isBcHydroSource(c.name));
+      steps[steps.length - 1].status = "done";
+
+      if (!bcHydroCustomer) {
+        steps[steps.length - 1].result = "BC Hydro not found in connected customers";
+        return {
+          propertyId,
+          propertyName: property.name,
+          propertyType,
+          steps,
+          outcome: "suspicious",
+          message:
+            "The property has not been shared with BC Hydro. We cannot see the meters. The building owner should be contacted.",
+        };
+      }
+
+      steps[steps.length - 1].result = `BC Hydro found: "${bcHydroCustomer.name}" (ID: ${bcHydroCustomer.id})`;
+
+      // Return data for Claude to decide on aggregation
+      return {
+        propertyId,
+        propertyName: property.name,
+        propertyType,
+        steps,
+        outcome: "requires_aggregation_judgment",
+        message: `The property is shared with BC Hydro but we cannot access the meters. You must now determine whether this property type ("${propertyType}") would be expected to have an aggregated meter. An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts — use your judgment based on the property type. If an aggregated meter IS expected, the building owner should be contacted. If an aggregated meter is NOT expected, the property data looks good.`,
+      };
+    } catch (err) {
+      steps[steps.length - 1].status = "error";
+      steps[steps.length - 1].result = err.message;
+      return {
+        propertyId,
+        propertyName: property.name,
+        propertyType,
+        steps,
+        outcome: "error",
+        message: `Could not check connected customers: ${err.message}`,
+      };
+    }
+  }
+
+  // ─── BRANCH B: Have meter access ───
+  steps[steps.length - 1].nextAction = "Have meter access → checking data source on each meter";
+
+  // STEP B1: Check meter data source
+  steps.push({ check: "Check meter data source (BC Hydro vs manual)", status: "running" });
+  let anyBcHydro = false;
+  const meterDetails = [];
+
+  for (const meter of metersResult.meters) {
+    if (meter.error) {
+      meterDetails.push({ id: meter.id, name: meter.name, source: "unknown", error: meter.error });
+      continue;
+    }
+    try {
+      const consumption = await getMeterConsumptionData(meter.id, null, null, accountName);
+      const bcHydroEntries = consumption.entries.filter(
+        (e) => isBcHydroSource(e.audit?.createdBy) || isBcHydroSource(e.audit?.lastUpdatedBy)
+      );
+      const source = bcHydroEntries.length > 0 ? "BC Hydro Web Services" : "Manual entry";
+      if (bcHydroEntries.length > 0) anyBcHydro = true;
+      meterDetails.push({
+        id: meter.id,
+        name: meter.name,
+        type: meter.type,
+        source,
+        totalEntries: consumption.entryCount,
+        bcHydroEntries: bcHydroEntries.length,
+        aggregateMeter: isAggregatedMeter(meter),
+      });
+    } catch (err) {
+      meterDetails.push({ id: meter.id, name: meter.name, source: "unknown", error: err.message });
+    }
+  }
+
+  steps[steps.length - 1].status = "done";
+  steps[steps.length - 1].result = { anyBcHydro, meters: meterDetails };
+
+  if (!anyBcHydro) {
+    return {
+      propertyId,
+      propertyName: property.name,
+      propertyType,
+      steps,
+      meters: meterDetails,
+      outcome: "suspicious",
+      message:
+        "The meter data was manually entered (not from BC Hydro Web Services). The property owner should be contacted.",
+    };
+  }
+
+  // Return data for Claude to decide on aggregation
+  return {
+    propertyId,
+    propertyName: property.name,
+    propertyType,
+    steps,
+    meters: meterDetails,
+    outcome: "requires_aggregation_judgment",
+    message: `The meter data is from BC Hydro Web Services. You must now determine whether this property type ("${propertyType}") would be expected to have an aggregated meter. An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts — use your judgment based on the property type. If an aggregated meter is NOT expected, the property data looks good. If an aggregated meter IS expected, check the meters list above for one that has aggregateMeter=true or whose name contains "aggregated", "suites", "units", or "residents". If found, the property data looks good. If not found, show the property type and meter list and report that an aggregated meter was expected but not found — the property owner should be contacted.`,
+  };
+}
+
 // ─── MCP Server ──────────────────────────────────────────────────────────────
 
 const server = new Server(
   { name: "espm-mcp", version: "1.0.0" },
-  { capabilities: { tools: {}, prompts: {} } }
+  { capabilities: { tools: {} } }
 );
 
 const ACCOUNT_NAME_PROP = {
@@ -787,6 +954,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "suspicious_data_check",
+      description:
+        "Investigate whether a property's energy data looks legitimate or suspicious. Runs a step-by-step decision tree: checks meter access, data source (BC Hydro Web Services vs manual entry), and whether an aggregated meter is present when expected. Returns a detailed narrative of each check, its result, and a final verdict.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          property_id: {
+            type: "string",
+            description: "The ESPM property ID to investigate",
+          },
+          ...ACCOUNT_NAME_PROP,
+        },
+        required: ["property_id"],
+      },
+    },
+    {
       name: "list_connected_customers",
       description:
         "List all customer accounts connected to your ESPM account. Useful for checking if a specific organization (e.g. BC Hydro) has a data exchange connection.",
@@ -865,6 +1048,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           args.account_name
         );
         break;
+      case "suspicious_data_check":
+        result = await suspiciousDataCheck(args.property_id, args.account_name);
+        break;
       case "list_connected_customers":
         result = await listConnectedCustomers(args.account_name);
         break;
@@ -884,143 +1070,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       isError: true,
     };
   }
-});
-
-// ─── Prompts ─────────────────────────────────────────────────────────────────
-
-server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-  prompts: [
-    {
-      name: "suspicious-data",
-      description:
-        "Investigate whether a property's energy data looks legitimate or suspicious. Runs a series of checks on meters, data sources, and aggregation.",
-      arguments: [
-        {
-          name: "property_id",
-          description: "The ESPM property ID to investigate",
-          required: true,
-        },
-      ],
-    },
-  ],
-}));
-
-server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  if (name !== "suspicious-data") {
-    throw new Error(`Unknown prompt: ${name}`);
-  }
-
-  const propertyId = args?.property_id;
-  if (!propertyId) {
-    throw new Error("property_id is required");
-  }
-
-  return {
-    messages: [
-      {
-        role: "user",
-        content: {
-          type: "text",
-          text: `Run the "Suspicious Data" investigation workflow for ESPM property ${propertyId}.
-
-Walk through the following checks IN ORDER. For each check, clearly print:
-- The name of the check you are running
-- The result of the check
-- What you are deciding to do next based on the result
-
----
-
-STEP 1: Get property details
-Call get_property with property_id "${propertyId}" to determine the property type.
-Print the property name, address, and primary function.
-
-STEP 2: Check meter access
-Call list_property_meters with property_id "${propertyId}".
-
-If the call FAILS with an error (typically 403 or "not authorized"), you do NOT have meter access. Go to BRANCH A.
-If the call SUCCEEDS and returns meters, you DO have meter access. Go to BRANCH B.
-
---- BRANCH A: No meter access ---
-
-STEP A1: Check if property is shared with BC Hydro
-Call list_connected_customers to see all connected accounts.
-Look through the list for any customer whose name contains "BC Hydro" or "BCHydro" (case-insensitive).
-
-If NOT shared with BC Hydro:
-→ Print: "The property has not been shared with BC Hydro. We cannot see the meters. The building owner should be contacted."
-→ STOP.
-
-If shared with BC Hydro:
-→ Check if the property type suggests an aggregated meter is needed (see AGGREGATION RULES below).
-  - If an aggregated meter IS expected: Print: "The property is shared with BC Hydro, but we expect an aggregated meter for this property type ([property type]). The building owner should be contacted."
-  - If an aggregated meter is NOT expected: Print: "Property data looks good."
-→ STOP.
-
---- BRANCH B: Have meter access ---
-
-STEP B1: Check meter data source
-For each meter returned, call get_meter_consumption_data to retrieve its recent entries.
-Check the audit fields (createdBy and lastUpdatedBy) on the consumption entries for any indication that the data was populated by BC Hydro. Look for "BC Hydro", "BCHydro", or "bchydro" (case-insensitive) in these fields.
-
-If NO meters have BC Hydro as the data source:
-→ Print: "The meter data was manually entered (not from BC Hydro Web Services). The property owner should be contacted."
-→ STOP.
-
-If at least one meter has BC Hydro as the data source, continue:
-
-STEP B2: Check if aggregated meter is needed
-Using the property type from Step 1, determine if an aggregated meter is expected (see AGGREGATION RULES below).
-
-If an aggregated meter is NOT expected:
-→ Print: "Property data looks good."
-→ STOP.
-
-If an aggregated meter IS expected, continue:
-
-STEP B3: Check for aggregated meter
-Look through the meters for one that meets ANY of these criteria:
-- The meter's aggregateMeter field is true
-- The meter's data source is BC Hydro AND its name contains one of: "aggregated", "suites", "units", "residents" (case-insensitive)
-
-If such a meter EXISTS:
-→ Print: "Property data looks good."
-→ STOP.
-
-If NO aggregated meter is found:
-→ Print the property type and list ALL meters found (name, type, and source).
-→ Print: "We expected an aggregated meter for this property type ([property type]) but none was found. The property owner should be contacted."
-→ STOP.
-
---- AGGREGATION RULES ---
-An aggregated meter is expected when the property type suggests there would be 3 or more commercial BC Hydro accounts OR 5 or more residential BC Hydro accounts. Use the property type to infer this:
-
-Property types that likely NEED an aggregated meter (multiple units/tenants):
-- Multifamily Housing
-- Residence Hall / Dormitory
-- Mixed Use Property
-- Hotel / Resort
-- Senior Care Community
-- Large Office (multi-tenant)
-- Shopping Centre / Mall
-- Supermarket / Grocery Store (large, multi-unit)
-
-Property types that likely DO NOT need an aggregated meter (single account expected):
-- Warehouse / Distribution Centre
-- K-12 School
-- Worship Facility
-- Library
-- Fire Station
-- Swimming Pool / Recreation Centre
-- Small Office (single tenant)
-- Parking
-
-Use your best judgment based on the specific property type. When uncertain, lean toward checking for an aggregated meter.`,
-        },
-      },
-    ],
-  };
 });
 
 // ─── Start ───────────────────────────────────────────────────────────────────

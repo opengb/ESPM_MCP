@@ -113,7 +113,7 @@ Add this entry (update the path to where you cloned the repo):
     "espm": {
       "type": "stdio",
       "command": "node",
-      "args": ["/absolute/path/to/ESPM_MCP/src/index.js"]
+      "args": ["/absolute/path/to/ESPM_MCP/src/stdio.js"]
     }
   }
 }

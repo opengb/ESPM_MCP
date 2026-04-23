@@ -39,33 +39,130 @@ if (existsSync(envPath)) {
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
-const USERNAME = process.env.ESPM_USERNAME;
-const PASSWORD = process.env.ESPM_PASSWORD;
-const ENV = process.env.ESPM_ENV || "test";
+const csvPath = process.env.ESPM_ACCOUNTS_CSV
+  ? process.env.ESPM_ACCOUNTS_CSV
+  : join(__dirname, "../accounts.csv");
 
-const BASE_URL =
-  ENV === "live"
+// Parse a CSV string into an array of records. Handles quoted fields and
+// escaped double quotes (""). Strict enough for a credentials file; not a
+// full RFC 4180 parser.
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field);
+      field = "";
+      if (row.some((v) => v.length > 0)) rows.push(row);
+      row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    if (row.some((v) => v.length > 0)) rows.push(row);
+  }
+  return rows;
+}
+
+function loadAccounts(path) {
+  const map = new Map();
+  if (!existsSync(path)) return map;
+
+  const records = parseCsv(readFileSync(path, "utf8"));
+  if (records.length === 0) return map;
+
+  const header = records[0].map((h) => h.trim().toLowerCase());
+  const required = ["username", "password", "env"];
+  for (const col of required) {
+    if (!header.includes(col)) {
+      throw new Error(
+        `Accounts CSV at ${path} is missing required column "${col}". Expected columns: username,password,env.`
+      );
+    }
+  }
+  const userIdx = header.indexOf("username");
+  const passIdx = header.indexOf("password");
+  const envIdx = header.indexOf("env");
+
+  for (let i = 1; i < records.length; i++) {
+    const row = records[i];
+    const username = (row[userIdx] || "").trim();
+    const password = row[passIdx] || "";
+    const env = (row[envIdx] || "").trim() || "test";
+    if (!username) continue;
+    if (map.has(username)) {
+      throw new Error(
+        `Accounts CSV at ${path} contains duplicate username "${username}".`
+      );
+    }
+    map.set(username, { username, password, env });
+  }
+  return map;
+}
+
+const accounts = loadAccounts(csvPath);
+
+function resolveCredentials(accountName) {
+  if (accountName) {
+    const acct = accounts.get(accountName);
+    if (!acct) {
+      throw new Error(
+        `Unknown ESPM account "${accountName}". Check ${csvPath}.`
+      );
+    }
+    return acct;
+  }
+  const username = process.env.ESPM_USERNAME;
+  const password = process.env.ESPM_PASSWORD;
+  const env = process.env.ESPM_ENV || "test";
+  if (!username || !password) {
+    throw new Error(
+      "ESPM credentials not configured. Set ESPM_USERNAME/ESPM_PASSWORD in .env, provide an accounts.csv, or pass account_name."
+    );
+  }
+  return { username, password, env };
+}
+
+function baseUrlFor(env) {
+  return env === "live"
     ? "https://portfoliomanager.energystar.gov/ws"
     : "https://portfoliomanager.energystar.gov/wstest";
+}
 
 // ─── ESPM API Client ─────────────────────────────────────────────────────────
 
-function authHeader() {
-  const encoded = Buffer.from(`${USERNAME}:${PASSWORD}`).toString("base64");
-  return `Basic ${encoded}`;
-}
+async function espmGet(path, options = {}, accountName) {
+  const { username, password, env } = resolveCredentials(accountName);
+  const authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 
-async function espmGet(path, options = {}) {
-  if (!USERNAME || !PASSWORD) {
-    throw new Error(
-      "ESPM credentials not configured. Copy .env.example to .env and add your username and password."
-    );
-  }
-
-  const url = `${BASE_URL}${path}`;
+  const url = `${baseUrlFor(env)}${path}`;
   const response = await fetch(url, {
     headers: {
-      Authorization: authHeader(),
+      Authorization: authHeader,
       Accept: "application/xml",
       "Content-Type": "application/xml",
       ...(options.headers || {}),
@@ -150,8 +247,8 @@ function collectMetrics(node, metrics = []) {
   return metrics;
 }
 
-async function getAccountId() {
-  const data = await espmGet("/account");
+async function getAccountId(accountName) {
+  const data = await espmGet("/account", {}, accountName);
   const accountId = data?.account?.id;
   if (!accountId) {
     throw new Error("Could not determine your ESPM account ID.");
@@ -159,8 +256,8 @@ async function getAccountId() {
   return String(accountId);
 }
 
-async function getMetricCatalog() {
-  const data = await espmGet("/reports/metrics");
+async function getMetricCatalog(accountName) {
+  const data = await espmGet("/reports/metrics", {}, accountName);
   return collectMetrics(data);
 }
 
@@ -188,22 +285,23 @@ function formatProperty(prop) {
 
 // ─── Tool Implementations ────────────────────────────────────────────────────
 
-async function getAccount() {
-  const data = await espmGet("/account");
+async function getAccount(accountName) {
+  const data = await espmGet("/account", {}, accountName);
   const account = data?.account;
+  const { env } = resolveCredentials(accountName);
   return {
     id: account?.id,
     username: account?.username,
     name: `${account?.contact?.firstName} ${account?.contact?.lastName}`,
     organization: account?.organization?.name,
     email: account?.contact?.email,
-    environment: ENV,
+    environment: env,
   };
 }
 
-async function listProperties() {
-  const accountId = await getAccountId();
-  const data = await espmGet(`/account/${accountId}/property/list`);
+async function listProperties(accountName) {
+  const accountId = await getAccountId(accountName);
+  const data = await espmGet(`/account/${accountId}/property/list`, {}, accountName);
   const propertyLinks = extractProperties(data);
 
   // Extract IDs from the href links
@@ -216,12 +314,12 @@ async function listProperties() {
   return properties.filter((property) => property.id);
 }
 
-async function getProperty(propertyId) {
-  const data = await espmGet(`/property/${propertyId}`);
+async function getProperty(propertyId, accountName) {
+  const data = await espmGet(`/property/${propertyId}`, {}, accountName);
   return formatProperty(data?.property);
 }
 
-async function getPropertyMetrics(propertyId, year, month, metricNames = null) {
+async function getPropertyMetrics(propertyId, year, month, metricNames = null, accountName) {
   const y = year || new Date().getFullYear() - 1;
   const m = month || 12;
   const requestedMetrics =
@@ -234,7 +332,8 @@ async function getPropertyMetrics(propertyId, year, month, metricNames = null) {
       headers: {
         "PM-Metrics": requestedMetrics.join(","),
       },
-    }
+    },
+    accountName
   );
 
   const metrics = data?.propertyMetrics?.metric;
@@ -254,8 +353,8 @@ async function getPropertyMetrics(propertyId, year, month, metricNames = null) {
   return { propertyId, year: y, month: m, requestedMetrics, metrics: result };
 }
 
-async function listPropertyGroups() {
-  const data = await espmGet("/account/propertyGroups");
+async function listPropertyGroups(accountName) {
+  const data = await espmGet("/account/propertyGroups", {}, accountName);
   const groups = data?.response?.links?.link;
   if (!groups) return [];
   const groupList = Array.isArray(groups) ? groups : [groups];
@@ -266,8 +365,8 @@ async function listPropertyGroups() {
   });
 }
 
-async function getPropertyGroup(groupId) {
-  const data = await espmGet(`/propertyGroup/${groupId}`);
+async function getPropertyGroup(groupId, accountName) {
+  const data = await espmGet(`/propertyGroup/${groupId}`, {}, accountName);
   const group = data?.propertyGroup;
   return {
     id: group?.id,
@@ -276,21 +375,21 @@ async function getPropertyGroup(groupId) {
   };
 }
 
-async function getGroupProperties(groupId) {
-  const data = await espmGet(`/propertyGroup/${groupId}/properties`);
+async function getGroupProperties(groupId, accountName) {
+  const data = await espmGet(`/propertyGroup/${groupId}/properties`, {}, accountName);
   const list = arrayify(data?.response?.links?.link);
   return list.map((link) => extractLinkId(link)).filter(Boolean);
 }
 
-async function getEnergyStarCertificationSummary(year) {
+async function getEnergyStarCertificationSummary(year, accountName) {
   const requestedYear = Number(year);
   if (!Number.isInteger(requestedYear)) {
     throw new Error("Please provide a valid year, such as 2025.");
   }
 
   const [properties, metricCatalog] = await Promise.all([
-    listProperties(),
-    getMetricCatalog(),
+    listProperties(accountName),
+    getMetricCatalog(accountName),
   ]);
 
   const yearsCertifiedMetric = findMetricName(
@@ -313,11 +412,14 @@ async function getEnergyStarCertificationSummary(year) {
   for (const property of properties) {
     try {
       const [details, metricsData] = await Promise.all([
-        getProperty(property.id),
-        getPropertyMetrics(property.id, requestedYear, 12, [
-          yearsCertifiedMetric,
-          "energyStarCertificationEligibility",
-        ]),
+        getProperty(property.id, accountName),
+        getPropertyMetrics(
+          property.id,
+          requestedYear,
+          12,
+          [yearsCertifiedMetric, "energyStarCertificationEligibility"],
+          accountName
+        ),
       ]);
 
       const yearsCertified = String(metricsData.metrics?.[yearsCertifiedMetric] || "");
@@ -349,9 +451,9 @@ async function getEnergyStarCertificationSummary(year) {
   };
 }
 
-async function getPortfolioSummary() {
+async function getPortfolioSummary(accountName) {
   // Get all properties and pull metrics for each — builds a portfolio-level view
-  const props = await listProperties();
+  const props = await listProperties(accountName);
   const year = new Date().getFullYear() - 1;
 
   const summaries = [];
@@ -361,8 +463,8 @@ async function getPortfolioSummary() {
   for (const p of sample) {
     try {
       const [details, metricsData] = await Promise.all([
-        getProperty(p.id),
-        getPropertyMetrics(p.id, year, 12),
+        getProperty(p.id, accountName),
+        getPropertyMetrics(p.id, year, 12, null, accountName),
       ]);
       summaries.push({
         id: p.id,
@@ -388,10 +490,10 @@ async function getPortfolioSummary() {
   };
 }
 
-async function getGroupScoreSummary(groupId) {
+async function getGroupScoreSummary(groupId, accountName) {
   const [groupInfo, propertyIds] = await Promise.all([
-    getPropertyGroup(groupId),
-    getGroupProperties(groupId),
+    getPropertyGroup(groupId, accountName),
+    getGroupProperties(groupId, accountName),
   ]);
 
   const year = new Date().getFullYear() - 1;
@@ -400,8 +502,8 @@ async function getGroupScoreSummary(groupId) {
   for (const id of propertyIds) {
     try {
       const [details, metricsData] = await Promise.all([
-        getProperty(id),
-        getPropertyMetrics(id, year, 12),
+        getProperty(id, accountName),
+        getPropertyMetrics(id, year, 12, null, accountName),
       ]);
       scores.push({
         id,
@@ -440,19 +542,27 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
+const ACCOUNT_NAME_PROP = {
+  account_name: {
+    type: "string",
+    description:
+      "Optional ESPM username from accounts.csv. If omitted, uses ESPM_USERNAME/ESPM_PASSWORD/ESPM_ENV from the environment.",
+  },
+};
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "get_account",
       description:
         "Get your ESPM account info — name, organization, and which environment you're connected to (test vs live).",
-      inputSchema: { type: "object", properties: {} },
+      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
     },
     {
       name: "list_properties",
       description:
         "List all property IDs in your ESPM account. Use this to discover what properties you have, then call get_property for details.",
-      inputSchema: { type: "object", properties: {} },
+      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
     },
     {
       name: "get_property",
@@ -465,6 +575,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "The ESPM property ID",
           },
+          ...ACCOUNT_NAME_PROP,
         },
         required: ["property_id"],
       },
@@ -488,6 +599,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "number",
             description: "Month to retrieve metrics for (defaults to 12)",
           },
+          ...ACCOUNT_NAME_PROP,
         },
         required: ["property_id"],
       },
@@ -496,7 +608,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "list_property_groups",
       description:
         "List all property groups in your account (e.g. by fund, asset type, or management style). Returns group IDs you can use with other tools.",
-      inputSchema: { type: "object", properties: {} },
+      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
     },
     {
       name: "get_property_group",
@@ -508,6 +620,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "The ESPM property group ID",
           },
+          ...ACCOUNT_NAME_PROP,
         },
         required: ["group_id"],
       },
@@ -523,6 +636,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "The ESPM property group ID",
           },
+          ...ACCOUNT_NAME_PROP,
         },
         required: ["group_id"],
       },
@@ -531,7 +645,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "get_portfolio_summary",
       description:
         "Get a high-level summary of your entire portfolio — scores, EUI, and property details across all properties (samples up to 50). Good for 'what does my portfolio look like overall?' questions.",
-      inputSchema: { type: "object", properties: {} },
+      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
     },
     {
       name: "get_energy_star_certification_summary",
@@ -544,6 +658,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "number",
             description: "Calendar year to check for ENERGY STAR certification, such as 2025.",
           },
+          ...ACCOUNT_NAME_PROP,
         },
         required: ["year"],
       },
@@ -559,31 +674,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     switch (name) {
       case "get_account":
-        result = await getAccount();
+        result = await getAccount(args.account_name);
         break;
       case "list_properties":
-        result = await listProperties();
+        result = await listProperties(args.account_name);
         break;
       case "get_property":
-        result = await getProperty(args.property_id);
+        result = await getProperty(args.property_id, args.account_name);
         break;
       case "get_property_metrics":
-        result = await getPropertyMetrics(args.property_id, args.year, args.month);
+        result = await getPropertyMetrics(
+          args.property_id,
+          args.year,
+          args.month,
+          null,
+          args.account_name
+        );
         break;
       case "list_property_groups":
-        result = await listPropertyGroups();
+        result = await listPropertyGroups(args.account_name);
         break;
       case "get_property_group":
-        result = await getPropertyGroup(args.group_id);
+        result = await getPropertyGroup(args.group_id, args.account_name);
         break;
       case "get_group_score_summary":
-        result = await getGroupScoreSummary(args.group_id);
+        result = await getGroupScoreSummary(args.group_id, args.account_name);
         break;
       case "get_portfolio_summary":
-        result = await getPortfolioSummary();
+        result = await getPortfolioSummary(args.account_name);
         break;
       case "get_energy_star_certification_summary":
-        result = await getEnergyStarCertificationSummary(args.year);
+        result = await getEnergyStarCertificationSummary(args.year, args.account_name);
         break;
       default:
         throw new Error(`Unknown tool: ${name}`);

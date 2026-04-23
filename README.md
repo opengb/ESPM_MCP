@@ -81,6 +81,37 @@ ESPM_PASSWORD=your_password
 ESPM_ENV=test   # change to "live" once you have live API access
 ```
 
+### Step 3b — (Optional) Multiple accounts via CSV
+
+If you manage more than one ESPM login (e.g. separate test and live accounts,
+or one login per fund), you can list them in a read-only CSV file and pick one
+per tool call.
+
+1. Copy the example:
+
+   ```bash
+   cp accounts.csv.example accounts.csv
+   ```
+
+2. Edit `accounts.csv`. Columns are `username,password,env`:
+
+   ```csv
+   username,password,env
+   alice@example.com,pass1,test
+   bob@example.com,pass2,live
+   ```
+
+3. By default the server looks for `accounts.csv` in the repo root. Override
+   with the `ESPM_ACCOUNTS_CSV` env var if you'd rather keep it elsewhere.
+
+4. Every tool now accepts an optional `account_name` parameter — pass the
+   `username` value from the CSV to pick which account to use. If you omit it,
+   the server falls back to `ESPM_USERNAME` / `ESPM_PASSWORD` / `ESPM_ENV`
+   from `.env`, so existing single-account setups keep working unchanged.
+
+The CSV is only ever read; the server never writes to it. Restart the server
+after editing it.
+
 ### Step 4 — Connect to Claude Desktop
 
 Open your Claude Desktop config file:

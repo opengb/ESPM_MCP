@@ -27,7 +27,12 @@ if (existsSync(envPath)) {
     if (!trimmed || trimmed.startsWith("#")) continue;
     const [key, ...valueParts] = trimmed.split("=");
     if (key && valueParts.length > 0) {
-      process.env[key.trim()] = valueParts.join("=").replace(/\s+#.*$/, "").trim();
+      let val = valueParts.join("=").replace(/\s+#.*$/, "").trim();
+      // Strip surrounding quotes
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      process.env[key.trim()] = val;
     }
   }
 }

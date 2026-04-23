@@ -136,15 +136,18 @@ function resolveCredentials(accountName) {
     }
     return acct;
   }
-  const username = process.env.ESPM_USERNAME;
-  const password = process.env.ESPM_PASSWORD;
-  const env = process.env.ESPM_ENV || "test";
-  if (!username || !password) {
+  if (accounts.size === 0) {
     throw new Error(
-      "ESPM credentials not configured. Set ESPM_USERNAME/ESPM_PASSWORD in .env, provide an accounts.csv, or pass account_name."
+      `No ESPM accounts configured. Add at least one row to ${csvPath} (columns: username,password,env).`
     );
   }
-  return { username, password, env };
+  if (accounts.size > 1) {
+    const names = Array.from(accounts.keys()).join(", ");
+    throw new Error(
+      `Multiple ESPM accounts configured; pass account_name. Available: ${names}.`
+    );
+  }
+  return accounts.values().next().value;
 }
 
 function baseUrlFor(env) {
@@ -290,13 +293,9 @@ function listAccounts() {
     name: username,
     env,
   }));
-  const envDefaultAvailable = Boolean(
-    process.env.ESPM_USERNAME && process.env.ESPM_PASSWORD
-  );
   return {
     source: existsSync(csvPath) ? csvPath : null,
     accounts: configured,
-    envDefaultAvailable,
   };
 }
 
@@ -561,7 +560,7 @@ const ACCOUNT_NAME_PROP = {
   account_name: {
     type: "string",
     description:
-      "Optional ESPM username from accounts.csv. If omitted, uses ESPM_USERNAME/ESPM_PASSWORD/ESPM_ENV from the environment.",
+      "ESPM username from accounts.csv. Optional only when exactly one account is configured; otherwise required.",
   },
 };
 

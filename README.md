@@ -26,7 +26,7 @@ For demonstration and educational purposes only. This is not an official ENERGY 
 ```
 Claude (your question)
   → MCP server (runs locally on your machine)
-    → ESPM API (using your credentials from .env)
+    → ESPM API (using your credentials from accounts.csv)
       → Your portfolio data only
         → Claude answers your question
 ```
@@ -69,23 +69,7 @@ npm install
 
 ### Step 3 — Add your credentials
 
-```bash
-cp env.example .env
-```
-
-Open `.env` and fill in your ESPM username and password:
-
-```
-ESPM_USERNAME=your_username
-ESPM_PASSWORD=your_password
-ESPM_ENV=test   # change to "live" once you have live API access
-```
-
-### Step 3b — (Optional) Multiple accounts via CSV
-
-If you manage more than one ESPM login (e.g. separate test and live accounts,
-or one login per fund), you can list them in a read-only CSV file and pick one
-per tool call.
+Credentials live in a read-only CSV file.
 
 1. Copy the example:
 
@@ -93,7 +77,8 @@ per tool call.
    cp accounts.csv.example accounts.csv
    ```
 
-2. Edit `accounts.csv`. Columns are `username,password,env`:
+2. Edit `accounts.csv`. Columns are `username,password,env` (set `env` to
+   `test` or `live` per row):
 
    ```csv
    username,password,env
@@ -102,12 +87,13 @@ per tool call.
    ```
 
 3. By default the server looks for `accounts.csv` in the repo root. Override
-   with the `ESPM_ACCOUNTS_CSV` env var if you'd rather keep it elsewhere.
+   with the `ESPM_ACCOUNTS_CSV` env var if you'd rather keep it elsewhere
+   (e.g. in `.env`, see `env.example`).
 
-4. Every tool now accepts an optional `account_name` parameter — pass the
-   `username` value from the CSV to pick which account to use. If you omit it,
-   the server falls back to `ESPM_USERNAME` / `ESPM_PASSWORD` / `ESPM_ENV`
-   from `.env`, so existing single-account setups keep working unchanged.
+4. Every tool accepts an `account_name` parameter — pass the `username` value
+   from the CSV to pick which account to use. If the CSV contains exactly one
+   account, you can omit `account_name` and the server uses that account;
+   otherwise `account_name` is required.
 
 The CSV is only ever read; the server never writes to it. Restart the server
 after editing it.
@@ -167,7 +153,7 @@ Restart Claude Desktop. You'll see the ESPM tools available. Start asking questi
 
 ## Privacy
 
-Your ESPM credentials are stored only in the `.env` file on your local machine. They are never transmitted to any server other than the official ESPM API (`portfoliomanager.energystar.gov`). This MCP has no backend, no telemetry, and no external dependencies beyond the ESPM API itself.
+Your ESPM credentials are stored only in the `accounts.csv` file on your local machine. They are never transmitted to any server other than the official ESPM API (`portfoliomanager.energystar.gov`). This MCP has no backend, no telemetry, and no external dependencies beyond the ESPM API itself.
 
 ---
 

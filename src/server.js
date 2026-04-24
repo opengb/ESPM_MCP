@@ -12,6 +12,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { parseStringPromise } from "xml2js";
+import { getTools as getSuspiciousDataTools, handleTool as handleSuspiciousDataTool } from "./suspicious-data.js";
 import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -667,6 +668,7 @@ export function createEspmServer() {
           "Get a high-level summary of your entire portfolio — scores, EUI, and property details across all properties (samples up to 50). Good for 'what does my portfolio look like overall?' questions.",
         inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
       },
+      ...getSuspiciousDataTools(ACCOUNT_NAME_PROP),
       {
         name: "get_energy_star_certification_summary",
         description:
@@ -729,8 +731,12 @@ export function createEspmServer() {
         case "get_energy_star_certification_summary":
           result = await getEnergyStarCertificationSummary(args.year, args.account_name);
           break;
-        default:
-          throw new Error(`Unknown tool: ${name}`);
+        default: {
+          const suspiciousDataDeps = { espmGet, arrayify, extractLinkId, extractText, getProperty, accounts };
+          result = await handleSuspiciousDataTool(name, args, suspiciousDataDeps);
+          if (result === null) throw new Error(`Unknown tool: ${name}`);
+          break;
+        }
       }
 
       return {

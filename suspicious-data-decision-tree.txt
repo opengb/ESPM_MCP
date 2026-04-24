@@ -1,0 +1,20 @@
+Check: Do we have access to the property's meters?
+├── YES
+│   └── Check: Was the energy meter populated by BC Hydro Web Services?
+│       ├── YES
+│       │   └── Check: Does property type suggest an aggregated meter is needed?
+│       │       │   (3+ commercial or 5+ residential BC Hydro accounts)
+│       │       ├── YES
+│       │       │   └── Check: Is there an aggregated meter?
+│       │       │       │   (BC Hydro source + name contains "aggregated"/"suites"/"units"/"residents")
+│       │       │       ├── YES → "Property data looks good" ✅
+│       │       │       └── NO → Show property type + meters, expected aggregated meter not found, contact owner ⚠️
+│       │       └── NO → "Property data looks good" ✅
+│       └── NO → Data was manually entered, contact property owner ⚠️
+└── NO
+    └── Check: Has the property been shared with BC Hydro?
+        ├── YES
+        │   └── Check: Does property type suggest an aggregated meter is needed?
+        │       ├── YES → Contact building owner ⚠️
+        │       └── NO → "Looks good" ✅
+        └── NO → Not shared with BC Hydro, can't see meters, contact building owner ⚠️

@@ -1714,6 +1714,8 @@ export function createEspmServer() {
     "get_group_score_summary",
     "get_portfolio_summary",
     "run_data_quality_check",
+    "run_full_diagnostic",
+    "detect_faulty_data_points",
     "get_meter_consumption",
     "check_aggregated_meters",
     "list_property_meters",

@@ -318,39 +318,79 @@ IMPORTANT: Always present suspicious data check results in this compact format. 
 [propertyName], [address]
 [propertyType] | Account: [account]
 
-Then print ONE line per check that was actually performed, using the data from "steps" and "meters". Use ✅ for pass and ⚠️ for problems. Examples:
+Then print a bulleted list with ONE bullet per check that was actually traversed. Each check MUST be its own bullet — never combine checks. Be concise.
 
-Meter access: ✅ 4 meters found
-BC Hydro connected: ✅ Yes ("BC Hydro Web Services")
-Data source: ✅ 2 electric meters from BC Hydro Web Services
-Aggregated meter: ✅ Found ("meter name here")
+- Meter access: [✅/⚠️] [short result]
+- BC Hydro data source: [✅/⚠️] [short result]
+- Aggregated meter needed: [✅/⚠️] [short result]
+- Aggregated meter found: [✅/⚠️] [short result]
 
-Or:
-
-Meter access: ✅ 2 meters found
-BC Hydro connected: ⚠️ No
-Data source: ⚠️ All meter data was manually entered (not from BC Hydro Web Services)
-
-Or:
-
-Meter access: ⚠️ No meter access
-BC Hydro connected: ⚠️ Not found in connected customers
-
-Always show the BC Hydro connection status if bcHydroConnected is present in the result. Only show other checks that were actually run — do not show skipped branches.
+Only show bullets for checks that were actually traversed — omit skipped checks. Keep each bullet to one short sentence.
 
 End with:
 
 Verdict: ✅ Property data looks good.
 — or —
-Verdict: ⚠️ [message from the result, e.g. "The property owner should be contacted."]
+Verdict: ⚠️ [short reason]. The property owner should be contacted.
 — or —
 Verdict: ❌ [error message]
 
-If outcome is "requires_aggregation_judgment", make your judgment about whether the property type needs an aggregated meter, then print the verdict as ✅ or ⚠️ accordingly. Add one brief sentence explaining your reasoning.
+If outcome is "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
 
 If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict.
 
 CRITICAL: Copy the template below VERBATIM. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
+- Replace {{PROPERTY_NAME}} with the actual property name
+- Replace {{PROPERTY_ID}} with the actual property ID
+- Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")
+- Include or exclude entire paragraphs based on the conditions noted — but never change the wording of a paragraph you include.
+
+---
+
+DRAFT EMAIL:
+
+Hi x,
+
+Thank you for submitting your building {{PROPERTY_NAME}} (ID: {{PROPERTY_ID}}) to the Building Owner Portal!
+
+Upon our initial review, the data suggests that the energy usage data submitted is incomplete based on typical Site EUI ranges. Please add all meters and energy sources (examples include: {{METER_TYPES}}) for the entire building and verify the units of the energy data submitted.
+
+[Include the next paragraph ONLY if an aggregated meter is expected based on property type:]
+For Strata buildings, please ensure that you have reported the Electricity consumption data from the Common Area meter as well as the residential units. BC Hydro can help you aggregate the Electricity data for stratas with more than 5 residential accounts. You can find the instructions in our Data Aggregation article in Part 1 of our knowledge base.
+
+We'd also like to point out that it's an option to set up the automatic data exchange with BC Hydro or FortisBC by following the instructions in our knowledge base, which can replace manual data entry: https://support.crdbenchmarking.ca/portal/en/kb/articles/3-1-how-to-add-energy-data-automatically-set-up-data-exchange-with-utility-provider-s-in-espm
+
+Once this information has been added in ENERGY STAR Portfolio Manager, please click resubmit in the Building Owner Portal to complete your submission.
+
+If you have any questions, please let us know.
+
+---
+`;
+
+const BATCH_DISPLAY_INSTRUCTIONS = `
+IMPORTANT: Present batch suspicious data check results as follows.
+
+First, print a summary line:
+**Suspicious Data Check — [totalProperties] properties checked**
+
+✅ Looks good: [count] | ⚠️ Flagged: [count] | ❌ Error: [count]
+
+Then for EACH property, print a block with a bulleted list of checks. Each check MUST be its own bullet point — never combine checks on one line. Be concise — no extra commentary.
+
+**[propertyName] (ID: [propertyId])** — [propertyType]
+
+- Meter access: [✅/⚠️] [short result]
+- BC Hydro data source: [✅/⚠️] [short result]
+- Aggregated meter needed: [✅/⚠️] [short result]
+- Aggregated meter found: [✅/⚠️] [short result]
+
+Verdict: [✅/⚠️/❌] [short verdict]
+
+Only show bullets for checks that were actually traversed — omit checks that were skipped. Keep each bullet to one short sentence. For "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
+
+After ALL property blocks, for each property that was flagged (⚠️), print a draft email.
+
+CRITICAL: Copy the template below VERBATIM for each flagged property. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
 - Replace {{PROPERTY_NAME}} with the actual property name
 - Replace {{PROPERTY_ID}} with the actual property ID
 - Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")
@@ -425,17 +465,21 @@ export function getTools(ACCOUNT_NAME_PROP) {
     {
       name: "suspicious_data_check",
       description:
-        "Investigate whether a property's energy data looks legitimate or suspicious. Runs a step-by-step decision tree: checks meter access, data source (BC Hydro Web Services vs manual entry), and whether an aggregated meter is present when expected. Returns a detailed narrative of each check, its result, and a final verdict.",
+        "Investigate whether a property's energy data looks legitimate or suspicious. Runs a step-by-step decision tree: checks meter access, data source (BC Hydro Web Services vs manual entry), and whether an aggregated meter is present when expected. Accepts a single property_id or an array of property_ids for batch checks. IMPORTANT: If the user uploads or provides a CSV or Excel file, you MUST read the file contents, extract the value from the 'pm-property-id' column for every row, and pass all of them as the property_ids array parameter. Do NOT pass a file path — this tool cannot read files directly.",
       inputSchema: {
         type: "object",
         properties: {
           property_id: {
             type: "string",
-            description: "The ESPM property ID to investigate",
+            description: "A single ESPM property ID to investigate.",
+          },
+          property_ids: {
+            type: "array",
+            items: { type: "string" },
+            description: "An array of ESPM property IDs to check in batch. Use this when the user uploads a file — extract the pm-property-id values and pass them here.",
           },
           ...ACCOUNT_NAME_PROP,
         },
-        required: ["property_id"],
       },
     },
   ];
@@ -454,9 +498,41 @@ export async function handleTool(name, args, deps) {
         deps
       );
     case "suspicious_data_check": {
-      const result = await suspiciousDataCheck(args.property_id, args.account_name, deps);
-      result._displayInstructions = DISPLAY_INSTRUCTIONS;
-      return result;
+      // Determine property IDs: from array or single ID
+      let propertyIds;
+      if (args.property_ids && args.property_ids.length > 0) {
+        propertyIds = args.property_ids;
+      } else if (args.property_id) {
+        // Single property — run and return directly
+        const result = await suspiciousDataCheck(args.property_id, args.account_name, deps);
+        result._displayInstructions = DISPLAY_INSTRUCTIONS;
+        return result;
+      } else {
+        return { error: "Provide property_id or property_ids." };
+      }
+
+      if (propertyIds.length === 0) {
+        return { error: "No property IDs found." };
+      }
+
+      // Batch mode
+      const results = [];
+      for (const pid of propertyIds) {
+        const result = await suspiciousDataCheck(pid, args.account_name, deps);
+        results.push(result);
+      }
+
+      return {
+        _displayInstructions: BATCH_DISPLAY_INSTRUCTIONS,
+        totalProperties: propertyIds.length,
+        results,
+        summary: {
+          looks_good: results.filter((r) => r.outcome === "looks_good").length,
+          suspicious: results.filter((r) => r.outcome === "suspicious").length,
+          requires_judgment: results.filter((r) => r.outcome === "requires_aggregation_judgment").length,
+          error: results.filter((r) => r.outcome === "error").length,
+        },
+      };
     }
     default:
       return null;

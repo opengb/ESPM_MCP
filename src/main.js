@@ -45,6 +45,7 @@ if (transport === "stdio") {
   const oauthAudience = process.env.MCP_HTTP_OAUTH_AUDIENCE;
   const oauthRequiredScope = process.env.MCP_HTTP_OAUTH_REQUIRED_SCOPE;
   const oauthScopesRaw = process.env.MCP_HTTP_OAUTH_SCOPES;
+  const oauthTokeninfoUrl = process.env.MCP_HTTP_OAUTH_TOKENINFO_URL;
   const oauthPublicUrl = process.env.MCP_HTTP_PUBLIC_URL?.replace(/\/$/, "");
   const oauthAnySet = oauthJwksUrl || oauthIssuerRaw || oauthAudience || oauthRequiredScope;
   if (oauthAnySet && (!oauthJwksUrl || !oauthIssuerRaw || !oauthAudience)) {
@@ -75,6 +76,7 @@ if (transport === "stdio") {
         resourceUrl: `${oauthPublicUrl}/mcp`,
         authorizationServers: issuerList.filter((s) => s.startsWith("https://")),
         scopes: scopesList,
+        tokeninfoUrl: oauthTokeninfoUrl,
       }
     : null;
 

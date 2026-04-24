@@ -75,7 +75,50 @@ function bearerChallenge({ error, description, scope } = {}) {
   return `Bearer ${parts.join(", ")}`;
 }
 
-async function verifyJwt(req, config, jwks) {
+function checkScope(scopeString, requiredScope) {
+  if (!requiredScope) return true;
+  const scopes = typeof scopeString === "string" ? scopeString.split(/\s+/).filter(Boolean) : [];
+  return scopes.includes(requiredScope);
+}
+
+async function verifyViaTokeninfo(token, config) {
+  const url = `${config.tokeninfoUrl}?access_token=${encodeURIComponent(token)}`;
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (err) {
+    log("ESPM MCP tokeninfo request failed:", err);
+    return { ok: false, status: 503, challenge: bearerChallenge({ error: "temporarily_unavailable", description: "Token validation failed" }) };
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const description = body.error_description || body.error || "Token invalid";
+    log(`ESPM MCP tokeninfo rejected: ${description}`);
+    return { ok: false, status: 401, challenge: bearerChallenge({ error: "invalid_token", description }) };
+  }
+
+  const info = await res.json();
+
+  if (config.audience) {
+    const auds = Array.isArray(info.aud) ? info.aud : info.aud ? [info.aud] : [];
+    if (!auds.includes(config.audience)) {
+      log(`ESPM MCP tokeninfo aud mismatch: got "${info.aud}", expected "${config.audience}"`);
+      return { ok: false, status: 401, challenge: bearerChallenge({ error: "invalid_token", description: "Audience mismatch" }) };
+    }
+  }
+
+  if (!checkScope(info.scope, config.requiredScope)) {
+    return { ok: false, status: 403, challenge: bearerChallenge({ error: "insufficient_scope", description: "Missing required scope", scope: config.requiredScope }) };
+  }
+
+  return { ok: true };
+}
+
+async function verifyToken(req, config, jwks) {
   const header = req.headers["authorization"];
   if (!header || typeof header !== "string") {
     return { ok: false, status: 401, challenge: bearerChallenge() };
@@ -99,43 +142,22 @@ async function verifyJwt(req, config, jwks) {
   } catch (err) {
     if (err instanceof joseErrors.JWKSTimeout || err instanceof joseErrors.JWKSInvalid) {
       log("ESPM MCP JWKS unavailable:", err);
-      return {
-        ok: false,
-        status: 503,
-        challenge: bearerChallenge({ error: "temporarily_unavailable", description: "JWKS unavailable" }),
-      };
+      return { ok: false, status: 503, challenge: bearerChallenge({ error: "temporarily_unavailable", description: "JWKS unavailable" }) };
     }
     if (err instanceof joseErrors.JOSEError) {
+      if (err.code === "ERR_JWS_INVALID" && config.tokeninfoUrl) {
+        log("ESPM MCP token is not a JWT, falling back to tokeninfo");
+        return verifyViaTokeninfo(token, config);
+      }
       log(`ESPM MCP JWT rejected (${err.code ?? err.constructor.name}): ${err.message}`);
-      return {
-        ok: false,
-        status: 401,
-        challenge: bearerChallenge({ error: "invalid_token", description: err.message }),
-      };
+      return { ok: false, status: 401, challenge: bearerChallenge({ error: "invalid_token", description: err.message }) };
     }
     log("ESPM MCP JWT verification failed:", err);
-    return {
-      ok: false,
-      status: 503,
-      challenge: bearerChallenge({ error: "temporarily_unavailable", description: "JWT verification failed" }),
-    };
+    return { ok: false, status: 503, challenge: bearerChallenge({ error: "temporarily_unavailable", description: "JWT verification failed" }) };
   }
 
-  if (config.requiredScope) {
-    const scopes = typeof payload.scope === "string"
-      ? payload.scope.split(/\s+/).filter(Boolean)
-      : [];
-    if (!scopes.includes(config.requiredScope)) {
-      return {
-        ok: false,
-        status: 403,
-        challenge: bearerChallenge({
-          error: "insufficient_scope",
-          description: "Missing required scope",
-          scope: config.requiredScope,
-        }),
-      };
-    }
+  if (!checkScope(payload.scope, config.requiredScope)) {
+    return { ok: false, status: 403, challenge: bearerChallenge({ error: "insufficient_scope", description: "Missing required scope", scope: config.requiredScope }) };
   }
 
   return { ok: true };
@@ -192,7 +214,7 @@ export function createHttpTransport({
       return;
     }
     if (oauth) {
-      const result = await verifyJwt(req, oauth, jwks);
+      const result = await verifyToken(req, oauth, jwks);
       if (!result.ok) {
         writeJsonRpcError(res, result.status, -32001, "Unauthorized", {
           "WWW-Authenticate": result.challenge,

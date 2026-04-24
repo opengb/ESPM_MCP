@@ -90,6 +90,31 @@ async function getMeterConsumptionData(meterId, startDate, endDate, accountName,
   };
 }
 
+// ─── Aggregation Guidance ─────────────────────────────────────────────────────
+
+const AGGREGATION_GUIDANCE = `You must now determine whether this property type would be expected to have an aggregated meter.
+
+An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts. Use the property type to judge this:
+
+LIKELY NEEDS aggregated meter:
+- Multifamily Housing / Strata — many residential units, each with their own BC Hydro account
+- Senior Living Community / Assisted Living — many residential units
+- Residence Hall / Dormitory — many residential units
+- Mixed Use Property — residential + commercial units
+- Hotel / Resort — many individually-metered rooms possible
+
+LIKELY DOES NOT need aggregated meter:
+- Office / Warehouse / Retail — typically one or a few commercial accounts
+- K-12 School / Library / Fire Station / Worship Facility — single account
+- Swimming Pool / Recreation Centre — single account
+- Parking — single account
+
+When in doubt, lean toward expecting an aggregated meter.
+
+If an aggregated meter IS expected, check the meters list for one that has aggregateMeter=true or whose name contains "aggregated", "suites", "units", or "residents". If found, the property data looks good. If not found, the building owner should be contacted.
+
+If an aggregated meter is NOT expected, the property data looks good.`;
+
 // ─── Main Workflow ───────────────────────────────────────────────────────────
 
 async function suspiciousDataCheck(propertyId, accountName, deps) {
@@ -277,7 +302,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
       bcHydroConnected,
       bcHydroCustomerName,
       outcome: "requires_aggregation_judgment",
-      message: `The property is shared with BC Hydro but we cannot read the meter data. You must now determine whether this property type ("${propertyType}") would be expected to have an aggregated meter. An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts — use your judgment based on the property type. If an aggregated meter IS expected, check the meters list for one that has aggregateMeter=true or whose name contains "aggregated", "suites", "units", or "residents". If found, the property data looks good. If not found, the building owner should be contacted. If an aggregated meter is NOT expected, the property data looks good.`,
+      message: `The property is shared with BC Hydro but we cannot read the meter data. Property type: "${propertyType}". ${AGGREGATION_GUIDANCE}`,
     };
   }
 
@@ -304,11 +329,43 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
   return {
     ...baseResult,
     outcome: "requires_aggregation_judgment",
-    message: `The meter data is from BC Hydro Web Services. You must now determine whether this property type ("${propertyType}") would be expected to have an aggregated meter. An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts — use your judgment based on the property type. If an aggregated meter is NOT expected, the property data looks good. If an aggregated meter IS expected, check the meters list above for one that has aggregateMeter=true or whose name contains "aggregated", "suites", "units", or "residents". If found, the property data looks good. If not found, show the property type and meter list and report that an aggregated meter was expected but not found — the property owner should be contacted.`,
+    message: `The meter data is from BC Hydro Web Services. Property type: "${propertyType}". ${AGGREGATION_GUIDANCE}`,
   };
 }
 
-// ─── Display Instructions ────────────────────────────────────────────────────
+// ─── Email Template & Display Instructions ───────────────────────────────────
+
+const EMAIL_TEMPLATE_INSTRUCTIONS = `
+If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict. If contactEmail is present in the result, print "To: [contactEmail]" above the email.
+
+CRITICAL: Copy the template below VERBATIM. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
+- Replace {{CONTACT_NAME}} with the contactName from the result if present, otherwise use "x"
+- Replace {{PROPERTY_NAME}} with the actual property name
+- Replace {{PROPERTY_ID}} with the actual property ID
+- Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")
+- Include or exclude entire paragraphs based on the conditions noted — but never change the wording of a paragraph you include.
+
+---
+
+DRAFT EMAIL:
+
+Hi {{CONTACT_NAME}},
+
+Thank you for submitting your building {{PROPERTY_NAME}} (ID: {{PROPERTY_ID}}) to the Building Owner Portal!
+
+Upon our initial review, the data suggests that the energy usage data submitted is incomplete based on typical Site EUI ranges. Please add all meters and energy sources (examples include: {{METER_TYPES}}) for the entire building and verify the units of the energy data submitted.
+
+[Include the next paragraph ONLY if an aggregated meter is expected based on property type:]
+For Strata buildings, please ensure that you have reported the Electricity consumption data from the Common Area meter as well as the residential units. BC Hydro can help you aggregate the Electricity data for stratas with more than 5 residential accounts. You can find the instructions in our Data Aggregation article in Part 1 of our knowledge base.
+
+We'd also like to point out that it's an option to set up the automatic data exchange with BC Hydro or FortisBC by following the instructions in our knowledge base, which can replace manual data entry: https://support.crdbenchmarking.ca/portal/en/kb/articles/3-1-how-to-add-energy-data-automatically-set-up-data-exchange-with-utility-provider-s-in-espm
+
+Once this information has been added in ENERGY STAR Portfolio Manager, please click resubmit in the Building Owner Portal to complete your submission.
+
+If you have any questions, please let us know.
+
+---
+`;
 
 const DISPLAY_INSTRUCTIONS = `
 IMPORTANT: Always present suspicious data check results in this compact format. Do NOT use tables. Do NOT add extra commentary beyond the verdict line.
@@ -336,44 +393,18 @@ Verdict: ⚠️ [short reason]. The property owner should be contacted.
 Verdict: ❌ [error message]
 
 If outcome is "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
-
-If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict.
-
-CRITICAL: Copy the template below VERBATIM. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
-- Replace {{PROPERTY_NAME}} with the actual property name
-- Replace {{PROPERTY_ID}} with the actual property ID
-- Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")
-- Include or exclude entire paragraphs based on the conditions noted — but never change the wording of a paragraph you include.
-
----
-
-DRAFT EMAIL:
-
-Hi x,
-
-Thank you for submitting your building {{PROPERTY_NAME}} (ID: {{PROPERTY_ID}}) to the Building Owner Portal!
-
-Upon our initial review, the data suggests that the energy usage data submitted is incomplete based on typical Site EUI ranges. Please add all meters and energy sources (examples include: {{METER_TYPES}}) for the entire building and verify the units of the energy data submitted.
-
-[Include the next paragraph ONLY if an aggregated meter is expected based on property type:]
-For Strata buildings, please ensure that you have reported the Electricity consumption data from the Common Area meter as well as the residential units. BC Hydro can help you aggregate the Electricity data for stratas with more than 5 residential accounts. You can find the instructions in our Data Aggregation article in Part 1 of our knowledge base.
-
-We'd also like to point out that it's an option to set up the automatic data exchange with BC Hydro or FortisBC by following the instructions in our knowledge base, which can replace manual data entry: https://support.crdbenchmarking.ca/portal/en/kb/articles/3-1-how-to-add-energy-data-automatically-set-up-data-exchange-with-utility-provider-s-in-espm
-
-Once this information has been added in ENERGY STAR Portfolio Manager, please click resubmit in the Building Owner Portal to complete your submission.
-
-If you have any questions, please let us know.
-
----
-`;
+${EMAIL_TEMPLATE_INSTRUCTIONS}`;
 
 const BATCH_DISPLAY_INSTRUCTIONS = `
 IMPORTANT: Present batch suspicious data check results as follows.
 
-First, print a summary line:
+First, process ALL properties and make your judgments for any with outcome "requires_aggregation_judgment". Then print a summary with the FINAL counts after your judgments:
+
 **Suspicious Data Check — [totalProperties] properties checked**
 
-✅ Looks good: [count] | ⚠️ Flagged: [count] | ❌ Error: [count]
+✅ Looks good: [count] | ⚠️ Flagged: [count]
+
+Count properties as flagged if their outcome is "suspicious" OR if you judged "requires_aggregation_judgment" as ⚠️. Count as looks good if outcome is "looks_good" OR if you judged "requires_aggregation_judgment" as ✅. Do NOT use any pre-computed summary — compute the counts yourself after making all judgments.
 
 Then for EACH property, print a block with a bulleted list of checks. Each check MUST be its own bullet point — never combine checks on one line. Be concise — no extra commentary.
 
@@ -388,35 +419,8 @@ Verdict: [✅/⚠️/❌] [short verdict]
 
 Only show bullets for checks that were actually traversed — omit checks that were skipped. Keep each bullet to one short sentence. For "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
 
-After ALL property blocks, for each property that was flagged (⚠️), print a draft email.
-
-CRITICAL: Copy the template below VERBATIM for each flagged property. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
-- Replace {{PROPERTY_NAME}} with the actual property name
-- Replace {{PROPERTY_ID}} with the actual property ID
-- Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")
-- Include or exclude entire paragraphs based on the conditions noted — but never change the wording of a paragraph you include.
-
----
-
-DRAFT EMAIL:
-
-Hi x,
-
-Thank you for submitting your building {{PROPERTY_NAME}} (ID: {{PROPERTY_ID}}) to the Building Owner Portal!
-
-Upon our initial review, the data suggests that the energy usage data submitted is incomplete based on typical Site EUI ranges. Please add all meters and energy sources (examples include: {{METER_TYPES}}) for the entire building and verify the units of the energy data submitted.
-
-[Include the next paragraph ONLY if an aggregated meter is expected based on property type:]
-For Strata buildings, please ensure that you have reported the Electricity consumption data from the Common Area meter as well as the residential units. BC Hydro can help you aggregate the Electricity data for stratas with more than 5 residential accounts. You can find the instructions in our Data Aggregation article in Part 1 of our knowledge base.
-
-We'd also like to point out that it's an option to set up the automatic data exchange with BC Hydro or FortisBC by following the instructions in our knowledge base, which can replace manual data entry: https://support.crdbenchmarking.ca/portal/en/kb/articles/3-1-how-to-add-energy-data-automatically-set-up-data-exchange-with-utility-provider-s-in-espm
-
-Once this information has been added in ENERGY STAR Portfolio Manager, please click resubmit in the Building Owner Portal to complete your submission.
-
-If you have any questions, please let us know.
-
----
-`;
+If the property was flagged (⚠️), print the draft email immediately after that property's verdict, before moving on to the next property.
+${EMAIL_TEMPLATE_INSTRUCTIONS}`;
 
 // ─── Tool Definitions & Handler ──────────────────────────────────────────────
 
@@ -495,7 +499,7 @@ USAGE:
 
 When flagged ⚠️, a draft email to the building owner is generated.
 
-IMPORTANT: If the user uploads or provides a CSV or Excel file, you MUST read the file contents, extract the value from the 'pm-property-id' column for every row, and pass all of them as the property_ids array parameter. Do NOT pass a file path — this tool cannot read files directly.`,
+IMPORTANT: If the user uploads or provides a CSV or Excel file, you MUST read the file contents, extract the value from the 'pm-property-id' column for every row, and pass all of them as the property_ids array parameter. Also extract the 'data-contact-name' and 'data-contact-email' columns if present, and pass them as the contact_names and contact_emails parameters (objects mapping property ID to value). Do NOT pass a file path — this tool cannot read files directly.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -507,6 +511,14 @@ IMPORTANT: If the user uploads or provides a CSV or Excel file, you MUST read th
             type: "array",
             items: { type: "string" },
             description: "An array of ESPM property IDs to check in batch. Use this when the user uploads a file — extract the pm-property-id values and pass them here.",
+          },
+          contact_names: {
+            type: "object",
+            description: "A mapping of property ID to data contact name (from the 'data-contact-name' column in an uploaded file). Used to address the draft email. Example: {\"12345678\": \"John Smith\"}",
+          },
+          contact_emails: {
+            type: "object",
+            description: "A mapping of property ID to data contact email (from the 'data-contact-email' column in an uploaded file). Displayed alongside the draft email. Example: {\"12345678\": \"admin@example.com\"}",
           },
         },
       },
@@ -545,9 +557,13 @@ export async function handleTool(name, args, deps) {
       }
 
       // Batch mode
+      const contactNames = args.contact_names || {};
+      const contactEmails = args.contact_emails || {};
       const results = [];
       for (const pid of propertyIds) {
         const result = await suspiciousDataCheck(pid, args.account_name, deps);
+        if (contactNames[pid]) result.contactName = contactNames[pid];
+        if (contactEmails[pid]) result.contactEmail = contactEmails[pid];
         results.push(result);
       }
 
@@ -555,12 +571,6 @@ export async function handleTool(name, args, deps) {
         _displayInstructions: BATCH_DISPLAY_INSTRUCTIONS,
         totalProperties: propertyIds.length,
         results,
-        summary: {
-          looks_good: results.filter((r) => r.outcome === "looks_good").length,
-          suspicious: results.filter((r) => r.outcome === "suspicious").length,
-          requires_judgment: results.filter((r) => r.outcome === "requires_aggregation_judgment").length,
-          error: results.filter((r) => r.outcome === "error").length,
-        },
       };
     }
     default:

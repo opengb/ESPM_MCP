@@ -145,6 +145,103 @@ const UNIT_TO_KBTU = {
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * Scan a meter's monthly readings for faulty data points.
+ * Compares each reading against its adjacent months to stay seasonality-aware.
+ */
+function detectFaultyReadings(readings) {
+  const flags = [];
+  const n = readings.length;
+  if (n < 2) return flags;
+
+  // Pass 1: negatives, isolated zeros, spikes, drops
+  for (let i = 0; i < n; i++) {
+    const r = readings[i];
+    const { usage } = r;
+
+    if (usage !== null && usage < 0) {
+      flags.push({
+        startDate: r.startDate, endDate: r.endDate, usage,
+        issue: "negative",
+        finding: `Negative usage (${usage}). Negative consumption is physically invalid.`,
+        recommendation: "Replace with null in ESPM so the model excludes this month.",
+      });
+      continue;
+    }
+
+    if (usage === 0 || usage === null) {
+      const hasPrior = readings.slice(0, i).some((r2) => r2.usage > 0);
+      const hasLater = readings.slice(i + 1).some((r2) => r2.usage > 0);
+      if (hasPrior && hasLater) {
+        flags.push({
+          startDate: r.startDate, endDate: r.endDate, usage,
+          issue: "zero_isolated",
+          finding: "Zero or null reading surrounded by valid data — likely a missed read.",
+          recommendation: "Replace with null in ESPM so the model skips this month.",
+        });
+      }
+      continue;
+    }
+
+    // Spike / drop vs adjacent months
+    const neighbors = [];
+    if (i > 0 && readings[i - 1].usage > 0) neighbors.push(readings[i - 1].usage);
+    if (i < n - 1 && readings[i + 1].usage > 0) neighbors.push(readings[i + 1].usage);
+    if (neighbors.length === 0) continue;
+
+    const neighborAvg = neighbors.reduce((a, b) => a + b, 0) / neighbors.length;
+    if (neighborAvg <= 0) continue;
+    const ratio = usage / neighborAvg;
+
+    if (ratio > 4) {
+      flags.push({
+        startDate: r.startDate, endDate: r.endDate, usage,
+        neighborAverage: Math.round(neighborAvg * 10) / 10,
+        ratio: Math.round(ratio * 10) / 10,
+        issue: "spike",
+        finding: `Usage (${usage}) is ${Math.round(ratio * 10) / 10}× the average of adjacent months (${Math.round(neighborAvg * 10) / 10}). Possible billing anomaly or meter error.`,
+        recommendation: "Verify against the original bill. If erroneous, replace with null in ESPM.",
+      });
+    } else if (ratio < 0.25) {
+      flags.push({
+        startDate: r.startDate, endDate: r.endDate, usage,
+        neighborAverage: Math.round(neighborAvg * 10) / 10,
+        ratio: Math.round(ratio * 10) / 10,
+        issue: "drop",
+        finding: `Usage (${usage}) is only ${Math.round(ratio * 100)}% of the adjacent month average (${Math.round(neighborAvg * 10) / 10}). Possible partial read or meter off.`,
+        recommendation: "Verify against the original bill. If erroneous, replace with null in ESPM.",
+      });
+    }
+  }
+
+  // Pass 2: upgrade isolated zeros to zero_sequence if 3+ consecutive
+  let seqStart = -1;
+  for (let i = 0; i <= n; i++) {
+    const isZeroLike = i < n && (readings[i].usage === 0 || readings[i].usage === null);
+    if (isZeroLike && seqStart === -1) seqStart = i;
+    if (!isZeroLike && seqStart !== -1) {
+      const seqLen = i - seqStart;
+      if (seqLen >= 3) {
+        for (let j = seqStart; j < i; j++) {
+          const existingIdx = flags.findIndex((f) => f.startDate === readings[j].startDate);
+          const entry = {
+            startDate: readings[j].startDate, endDate: readings[j].endDate, usage: readings[j].usage,
+            issue: "zero_sequence",
+            finding: `Part of a ${seqLen}-month consecutive zero/null sequence — likely missing data or meter inactivity.`,
+            recommendation: "Replace the full sequence with null in ESPM, or use a different year's data for calibration if available.",
+          };
+          if (existingIdx >= 0) flags[existingIdx] = entry;
+          else flags.push(entry);
+        }
+      }
+      seqStart = -1;
+    }
+  }
+
+  return flags;
+}
+
+
 function looksLikeAggregatedMeter(name) {
   return AGGREGATED_METER_PATTERNS.some((pattern) => pattern.test(name));
 }
@@ -556,5 +653,156 @@ export function setupDiagnostics({ espmGet, arrayify, safeNum, extractText, extr
     };
   }
 
-  return { getMeterConsumption, checkAggregatedMeters, runDataQualityCheck };
+  async function detectFaultyDataPoints(propertyId, year, accountName) {
+    const y = year || new Date().getFullYear() - 1;
+
+    const [propertyDetails, meterListData] = await Promise.all([
+      getProperty(propertyId, accountName),
+      espmGet(`/property/${propertyId}/meter/list`, {}, accountName),
+    ]);
+
+    const meterStubs = arrayify(meterListData?.response?.links?.link)
+      .map((link) => ({ id: extractLinkId(link), name: link?.hint || null }))
+      .filter((m) => m.id);
+
+    const results = await Promise.all(
+      meterStubs.map(async (stub) => {
+        try {
+          const [details, consumption, priorConsumption, nextConsumption] = await Promise.all([
+            getMeterDetails(stub.id, accountName),
+            getMeterConsumption(stub.id, y, accountName),
+            getMeterConsumption(stub.id, y - 1, accountName).catch(() => null),
+            getMeterConsumption(stub.id, y + 1, accountName).catch(() => null),
+          ]);
+
+          // Cross-year suppression: compare the flagged reading's absolute value to the
+          // same calendar month in adjacent years. If they're within 2× of each other,
+          // the pattern is seasonal — not a fault. This handles heating spikes correctly:
+          // a cold January surrounded by mild Dec/Feb will look like a spike vs neighbors,
+          // but if last January had similar usage it's just the seasonal shape.
+          function isSuppressedByCrossYear(fault, ...referenceReadingArrays) {
+            if (fault.issue === "negative") return false;
+            const month = fault.startDate ? new Date(fault.startDate).getMonth() : -1;
+            if (month === -1) return false;
+            for (const readings of referenceReadingArrays) {
+              if (!readings?.length) continue;
+              const refEntry = readings.find(
+                (r) => r.startDate && new Date(r.startDate).getMonth() === month
+              );
+              if (!refEntry) continue;
+              const refUsage = refEntry.usage;
+              if (fault.issue === "zero_isolated" || fault.issue === "zero_sequence") {
+                if (refUsage === 0 || refUsage === null) return true;
+                continue;
+              }
+              if (!refUsage || refUsage <= 0 || !fault.usage || fault.usage <= 0) continue;
+              const ratio = fault.usage / refUsage;
+              // Within 2× in either direction → same seasonal pattern
+              if (ratio > 0.5 && ratio < 2.0) return true;
+            }
+            return false;
+          }
+
+          function applyFilter(rawFaults, ...refs) {
+            let suppressed = 0;
+            const kept = rawFaults.filter((f) => {
+              if (isSuppressedByCrossYear(f, ...refs)) { suppressed++; return false; }
+              return true;
+            });
+            return { faults: kept, suppressed };
+          }
+
+          // Scan year y — suppress using y-1 and y+1
+          const { faults: faultsY, suppressed: suppressedY } = applyFilter(
+            detectFaultyReadings(consumption.readings),
+            priorConsumption?.readings,
+            nextConsumption?.readings
+          );
+
+          // Also scan year y-1 — suppress using y (y-2 not fetched; acceptable trade-off)
+          const { faults: faultsPrior, suppressed: suppressedPrior } = applyFilter(
+            priorConsumption?.readings?.length ? detectFaultyReadings(priorConsumption.readings) : [],
+            consumption.readings
+          );
+
+          const allFaults = [
+            ...faultsPrior.map((f) => ({ ...f, year: y - 1 })),
+            ...faultsY.map((f) => ({ ...f, year: y })),
+          ];
+
+          return {
+            meterId: stub.id,
+            meterName: details.name,
+            meterType: details.type,
+            typeClass: classifyMeterType(details.type),
+            faultCount: allFaults.length,
+            suppressedAsSeasonalPatterns: suppressedY + suppressedPrior,
+            faults: allFaults,
+          };
+        } catch (err) {
+          return { meterId: stub.id, meterName: stub.name, error: err.message };
+        }
+      })
+    );
+
+    const totalFaults = results.reduce((sum, r) => sum + (r.faultCount || 0), 0);
+    const metersWithFaults = results.filter((r) => r.faultCount > 0).length;
+
+    return {
+      propertyId,
+      propertyName: propertyDetails.name,
+      yearsScanned: [y - 1, y],
+      metersChecked: results.length,
+      totalFaults,
+      recommendation:
+        totalFaults === 0
+          ? "No faulty data points detected across the scanned period."
+          : `${totalFaults} faulty reading(s) across ${metersWithFaults} meter(s). Replace flagged values with null in ESPM before running VAM calibration.`,
+      meters: results,
+    };
+  }
+
+  async function runFullDiagnostic(propertyId, year, accountName) {
+    const [qualityCheck, faultyCheck] = await Promise.all([
+      runDataQualityCheck(propertyId, accountName),
+      detectFaultyDataPoints(propertyId, year, accountName),
+    ]);
+
+    const configurationIssues = qualityCheck.checks.filter((c) => c.status !== "ok");
+    const metersWithFaults = faultyCheck.meters.filter((m) => m.faultCount > 0);
+    const totalIssues = configurationIssues.length + faultyCheck.totalFaults;
+
+    const overallStatus =
+      totalIssues === 0 ? "ready" :
+      totalIssues <= 2 ? "review recommended" :
+      "issues detected";
+
+    return {
+      propertyId,
+      propertyName: qualityCheck.propertyName,
+      primaryFunction: qualityCheck.primaryFunction,
+      grossFloorArea: qualityCheck.grossFloorArea,
+      year: faultyCheck.year,
+      siteEUI: qualityCheck.siteEUI,
+      canadianMedianSiteEUI: qualityCheck.canadianMedianSiteEUI,
+      overallStatus,
+      summary: {
+        totalIssues,
+        configurationIssues: configurationIssues.length,
+        faultyReadings: faultyCheck.totalFaults,
+        metersAffected: metersWithFaults.length,
+      },
+      configurationIssues,
+      faultyReadings: {
+        metersChecked: faultyCheck.metersChecked,
+        totalFaults: faultyCheck.totalFaults,
+        metersAffected: metersWithFaults.length,
+        meters: metersWithFaults,
+      },
+      vamReadiness: overallStatus,
+      vamStrategy: qualityCheck.vamStrategy,
+    };
+  }
+
+  return { getMeterConsumption, checkAggregatedMeters, runDataQualityCheck, detectFaultyDataPoints, runFullDiagnostic };
 }

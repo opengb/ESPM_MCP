@@ -17,6 +17,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY src ./src
+COPY melody-workflow-resources ./melody-workflow-resources
 
 ENV NODE_ENV=production \
     MCP_HTTP_HOST=0.0.0.0 \

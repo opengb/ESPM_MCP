@@ -211,8 +211,9 @@ tokens, verified locally as JWTs against the identity provider's JWKS. On
 each request the server checks the token's signature, `iss`, `aud`, and `exp`
 (with 30s clock tolerance) against the configured JWKS, issuer, and audience.
 
-All three settings below must be set together:
+All four settings below must be set together:
 
+- `MCP_HTTP_PUBLIC_URL` — the server's public HTTPS base URL (no trailing slash), e.g. `https://your-server.com`. Used to serve `/.well-known/oauth-protected-resource` so MCP clients can discover the authorization server automatically.
 - `MCP_HTTP_OAUTH_JWKS_URL` — the IdP's JWKS endpoint
 - `MCP_HTTP_OAUTH_ISSUER` — expected `iss` claim; comma-separated list if the IdP emits more than one
 - `MCP_HTTP_OAUTH_AUDIENCE` — expected `aud` claim (typically your OAuth client ID)
@@ -225,6 +226,7 @@ Optionally:
 your OAuth 2.0 Web Client:
 
 ```bash
+MCP_HTTP_PUBLIC_URL=https://your-server.com \
 MCP_HTTP_OAUTH_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs \
 MCP_HTTP_OAUTH_ISSUER="https://accounts.google.com,accounts.google.com" \
 MCP_HTTP_OAUTH_AUDIENCE=1234567890-abc.apps.googleusercontent.com \
@@ -236,6 +238,12 @@ The `AUDIENCE` value is the OAuth 2.0 Client ID from your Google Cloud Auth
 Platform credentials (looks like `<number>-<hash>.apps.googleusercontent.com`).
 Google emits both `https://accounts.google.com` and `accounts.google.com` as
 the `iss` claim depending on the flow, so list both.
+
+The server automatically exposes `GET /.well-known/oauth-protected-resource`
+pointing at `https://accounts.google.com` as the authorization server. MCP
+clients (including Claude's custom connector UI) fetch this on first connection
+to discover where to get a token — you don't need to configure it separately in
+the client.
 
 Hit the protected endpoint with the ID token as a Bearer credential:
 

@@ -44,10 +44,18 @@ if (transport === "stdio") {
   const oauthIssuerRaw = process.env.MCP_HTTP_OAUTH_ISSUER;
   const oauthAudience = process.env.MCP_HTTP_OAUTH_AUDIENCE;
   const oauthRequiredScope = process.env.MCP_HTTP_OAUTH_REQUIRED_SCOPE;
+  const oauthPublicUrl = process.env.MCP_HTTP_PUBLIC_URL?.replace(/\/$/, "");
   const oauthAnySet = oauthJwksUrl || oauthIssuerRaw || oauthAudience || oauthRequiredScope;
   if (oauthAnySet && (!oauthJwksUrl || !oauthIssuerRaw || !oauthAudience)) {
     console.error(
       "OAuth requires MCP_HTTP_OAUTH_JWKS_URL, MCP_HTTP_OAUTH_ISSUER, and MCP_HTTP_OAUTH_AUDIENCE to be set together."
+    );
+    process.exit(1);
+  }
+  if (oauthJwksUrl && !oauthPublicUrl) {
+    console.error(
+      "MCP_HTTP_PUBLIC_URL is required when OAuth is enabled (e.g. https://your-server.com). " +
+      "It is used to serve the OAuth protected-resource metadata that MCP clients need to discover the authorization server."
     );
     process.exit(1);
   }
@@ -60,6 +68,8 @@ if (transport === "stdio") {
         issuer: issuerList.length === 1 ? issuerList[0] : issuerList,
         audience: oauthAudience,
         requiredScope: oauthRequiredScope,
+        resourceUrl: `${oauthPublicUrl}/mcp`,
+        authorizationServers: issuerList.filter((s) => s.startsWith("https://")),
       }
     : null;
 

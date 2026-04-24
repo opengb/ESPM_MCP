@@ -147,9 +147,29 @@ export function createHttpTransport({
   const expectedDigest = basicAuth ? sha256(`${basicAuth.user}:${basicAuth.pass}`) : null;
   const basicRealm = `Basic realm="${REALM}"`;
   const jwks = oauth ? createRemoteJWKSet(new URL(oauth.jwksUrl)) : null;
+  const protectedResourceMetadata = oauth
+    ? JSON.stringify({
+        resource: oauth.resourceUrl,
+        authorization_servers: oauth.authorizationServers,
+        bearer_methods_supported: ["header"],
+      })
+    : null;
 
   const httpServer = createServer(async (req, res) => {
     const url = (req.url || "").split("?")[0];
+
+    if (url === "/.well-known/oauth-protected-resource" && oauth) {
+      if (req.method !== "GET") {
+        res.setHeader("Allow", "GET");
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(protectedResourceMetadata);
+      return;
+    }
+
     if (url !== "/mcp") {
       writeJsonRpcError(res, 404, -32601, "Not found");
       return;

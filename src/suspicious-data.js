@@ -136,11 +136,12 @@ If an aggregated meter IS expected, check the meters list for one that has aggre
 
 If an aggregated meter is NOT expected, the property data looks good.`;
 
-// ─── BC Hydro Sharing Check ──────────────────────────────────────────────────
+// ─── Property Sharing Check ──────────────────────────────────────────────────
 // The ESPM API has no endpoint for property-level sharing. We scrape the
 // ESPM web UI property summary page which embeds a JSON shares array.
 
-const sessionCache = new Map(); // username → sessionCookie
+const sessionCache = new Map(); // username → { cookie, baseUrl }
+const sharesCache = new Map(); // propertyId → shares array
 
 async function getEspmWebSession(username, password, env) {
   const cached = sessionCache.get(username);
@@ -171,11 +172,12 @@ async function getEspmWebSession(username, password, env) {
   return { cookie: session, baseUrl };
 }
 
-async function checkBcHydroSharing(propertyId, deps) {
+async function getPropertyShares(propertyId, deps) {
+  const cached = sharesCache.get(propertyId);
+  if (cached) return cached;
+
   try {
-    const { resolveCredentials } = deps;
-    // Try each account until we get the property page
-    const { accounts } = deps;
+    const { resolveCredentials, accounts } = deps;
     for (const [name] of accounts) {
       try {
         const { username, password, env } = resolveCredentials(name);
@@ -188,27 +190,77 @@ async function checkBcHydroSharing(propertyId, deps) {
 
         const html = await res.text();
         const sharesMatch = html.match(/\[\{&quot;contactId&quot;.*?\}\]/);
-        if (!sharesMatch) return { shared: false, customerName: null };
+        if (!sharesMatch) {
+          sharesCache.set(propertyId, []);
+          return [];
+        }
 
         const decoded = sharesMatch[0].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
         const shares = JSON.parse(decoded);
-        const bcHydro = shares.find((s) =>
-          /bc.?hydro/i.test(s.contactName || "") || /bc.?hydro/i.test(s.contactUsername || "")
-        );
-
-        return {
-          shared: !!bcHydro,
-          customerName: bcHydro?.contactName || null,
-          allShares: shares.map((s) => s.contactName),
-        };
+        sharesCache.set(propertyId, shares);
+        return shares;
       } catch {
         continue;
       }
     }
-    return { shared: false, customerName: null };
   } catch {
-    return { shared: false, customerName: null };
+    // fall through
   }
+  sharesCache.set(propertyId, []);
+  return [];
+}
+
+async function checkBcHydroSharing(propertyId, deps) {
+  const shares = await getPropertyShares(propertyId, deps);
+  const bcHydro = shares.find((s) =>
+    /bc.?hydro/i.test(s.contactName || "") || /bc.?hydro/i.test(s.contactUsername || "")
+  );
+  return {
+    shared: !!bcHydro,
+    customerName: bcHydro?.contactName || null,
+    allShares: shares.map((s) => s.contactName),
+  };
+}
+
+async function checkFortisBcSharing(propertyId, deps) {
+  const shares = await getPropertyShares(propertyId, deps);
+  const fortis = shares.find((s) =>
+    /fortis.?bc/i.test(s.contactName || "") || /fortis.?bc/i.test(s.contactUsername || "")
+  );
+  return {
+    shared: !!fortis,
+    customerName: fortis?.contactName || null,
+  };
+}
+
+// ─── Gas Data Check ──────────────────────────────────────────────────────────
+
+async function checkGasData(propertyId, { hasMeterAccess, meterDetails, allUnreadable }, deps) {
+  // No meter access or all unreadable → check FortisBC sharing
+  if (!hasMeterAccess || allUnreadable) {
+    const { shared, customerName } = await checkFortisBcSharing(propertyId, deps);
+    if (shared) {
+      return { status: "pass", message: `Gas data likely present (property shared with ${customerName} — based on sharing, not meter presence)` };
+    }
+    return { status: "info", message: "Property has no gas data" };
+  }
+
+  // Have meter access — check for gas meters
+  const gasMeters = (meterDetails || []).filter((m) =>
+    /natural.?gas|gas/i.test(m.type || "") || /natural.?gas|gas/i.test(m.name || "")
+  );
+
+  if (gasMeters.length === 0) {
+    return { status: "info", message: "No gas meter" };
+  }
+
+  // Check if any gas meter has data
+  const hasData = gasMeters.some((m) => m.totalEntries > 0);
+  if (hasData) {
+    return { status: "pass", message: `Gas meter with data found (${gasMeters.map((m) => m.name).join(", ")})` };
+  }
+
+  return { status: "info", message: `Gas meter with no data (${gasMeters.map((m) => m.name).join(", ")})` };
 }
 
 // ─── Main Workflow ───────────────────────────────────────────────────────────
@@ -288,11 +340,13 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
         steps[steps.length - 1].status = "done";
         steps[steps.length - 1].result = `Custom ID ${customId} not found in expected GFA list — GFA check skipped`;
       } else {
-        const actualGfa = parseFloat(property.grossFloorArea);
-        if (isNaN(actualGfa)) {
+        // ESPM API returns grossFloorArea in sq ft; expected GFA CSV is in m²
+        const actualGfaSqFt = parseFloat(property.grossFloorArea);
+        if (isNaN(actualGfaSqFt)) {
           steps[steps.length - 1].status = "done";
           steps[steps.length - 1].result = "No GFA value in ESPM — GFA check skipped";
         } else {
+          const actualGfa = actualGfaSqFt * 0.092903; // convert sq ft → m²
           const pctDiff = Math.abs(actualGfa - expectedGfa) / expectedGfa;
           gfaDetails = {
             customId,
@@ -343,6 +397,11 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
       ? "Shared with BC Hydro"
       : "Not shared with BC Hydro";
 
+    // Gas data check (no meter access)
+    const gasResult = await checkGasData(propertyId, { hasMeterAccess: false, meterDetails: null, allUnreadable: false }, deps);
+    steps.push({ check: "Gas data check", status: "done" });
+    steps[steps.length - 1].result = gasResult.message;
+
     if (!bcHydroShared) {
       return {
         propertyId,
@@ -350,6 +409,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
         propertyType,
         steps,
         bcHydroConnected: false,
+        gasCheck: gasResult,
         ...gfaResult,
         outcome: "suspicious",
         message:
@@ -416,6 +476,11 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
       ? `Yes ("${bcHydroCustomerName}")`
       : "Not shared with BC Hydro";
 
+    // Gas data check (consumption unreadable)
+    const gasResult = await checkGasData(propertyId, { hasMeterAccess: true, meterDetails, allUnreadable: true }, deps);
+    steps.push({ check: "Gas data check", status: "done" });
+    steps[steps.length - 1].result = gasResult.message;
+
     if (!bcHydroConnected) {
       return {
         propertyId,
@@ -425,6 +490,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
         meters: visibleMeters,
         bcHydroConnected,
         bcHydroCustomerName,
+        gasCheck: gasResult,
         ...gfaResult,
         outcome: "suspicious",
         message:
@@ -441,11 +507,17 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
       meters: visibleMeters,
       bcHydroConnected,
       bcHydroCustomerName,
+      gasCheck: gasResult,
       ...gfaResult,
       outcome: "requires_aggregation_judgment",
       message: `The property is shared with BC Hydro but we cannot read the meter data. Property type: "${propertyType}". ${AGGREGATION_GUIDANCE}`,
     };
   }
+
+  // Gas data check (have meter access, consumption readable)
+  const gasResult = await checkGasData(propertyId, { hasMeterAccess: true, meterDetails, allUnreadable: false }, deps);
+  steps.push({ check: "Gas data check", status: "done" });
+  steps[steps.length - 1].result = gasResult.message;
 
   const baseResult = {
     propertyId,
@@ -455,6 +527,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
     meters: meterDetails,
     bcHydroConnected,
     bcHydroCustomerName,
+    gasCheck: gasResult,
     ...gfaResult,
   };
 
@@ -478,7 +551,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
 // ─── Email Template & Display Instructions ───────────────────────────────────
 
 const EMAIL_TEMPLATE_INSTRUCTIONS = `
-If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict. If contactEmail is present in the result, print "To: [contactEmail]" above the email.
+If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict. If contactEmail is present in the result, print "To: [contactEmail]" above the email. Always include this link after each draft email: [Compose in Zoho Mail](https://mail.zohocloud.ca/zm/#compose)
 
 There are THREE email templates depending on what failed. Check gfaFlag and the meter outcome to determine which:
 - If ONLY the GFA check failed (gfaFlag is "fail" and meter checks passed): use the GFA TEMPLATE
@@ -486,7 +559,7 @@ There are THREE email templates depending on what failed. Check gfaFlag and the 
 - If BOTH failed: use the HYBRID TEMPLATE
 
 CRITICAL: Copy the template below VERBATIM. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
-- Replace {{CONTACT_NAME}} with the contactName from the result if present, otherwise use "x"
+- Replace {{CONTACT_NAME}} with the contact's FIRST NAME ONLY (e.g. "John Smith" → "John"). If contactName is not present, use "x"
 - Replace {{PROPERTY_NAME}} with the actual property name
 - Replace {{PROPERTY_ID}} with the actual property ID
 - Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")
@@ -557,8 +630,9 @@ Then print a bulleted list with ONE bullet per check that was actually traversed
 - BC Hydro data source: [✅/⚠️] [short result]
 - Aggregated meter needed: [✅/⚠️] [short result]
 - Aggregated meter found: [✅/⚠️] [short result]
+- Gas data check: [✅/ℹ️] [short result] (✅ if gas data present, ℹ️ if no gas data — this is informational, not a failure)
 
-Only show bullets for checks that were actually traversed — omit skipped checks. NEVER merge two checks into a single bullet point.
+You MUST print one bullet for EVERY entry in the "steps" array. Do not skip any. Print them in order. NEVER merge two checks into a single bullet point. If a step has check name "Gas data check", use ✅ if gasCheck.status is "pass", or ℹ️ if gasCheck.status is "info".
 
 End with:
 
@@ -640,6 +714,12 @@ export function getTools(ACCOUNT_NAME_PROP) {
         },
         required: ["meter_id"],
       },
+    },
+    {
+      name: "get_expected_gfa_list",
+      description:
+        "Return the full expected GFA list loaded from crd_expected_gfa.csv. Each entry maps a custom-id-1 to an expected gross floor area in m². Useful for debugging GFA check results.",
+      inputSchema: { type: "object", properties: {} },
     },
     {
       name: "suspicious_data_check",
@@ -729,6 +809,11 @@ export async function handleTool(name, args, deps) {
         args.account_name,
         deps
       );
+    case "get_expected_gfa_list":
+      return {
+        totalEntries: expectedGfaMap.size,
+        entries: Object.fromEntries(expectedGfaMap),
+      };
     case "suspicious_data_check": {
       // Determine property IDs: from array or single ID
       let propertyIds;

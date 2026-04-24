@@ -106,6 +106,7 @@ async function verifyJwt(req, config, jwks) {
       };
     }
     if (err instanceof joseErrors.JOSEError) {
+      log(`ESPM MCP JWT rejected (${err.code ?? err.constructor.name}): ${err.message}`);
       return {
         ok: false,
         status: 401,
@@ -163,6 +164,7 @@ export function createHttpTransport({
 
   const httpServer = createServer(async (req, res) => {
     const url = (req.url || "").split("?")[0];
+    log(`ESPM MCP ${req.method} ${url}`);
 
     if (url === "/.well-known/oauth-protected-resource" && oauth) {
       if (req.method !== "GET") {

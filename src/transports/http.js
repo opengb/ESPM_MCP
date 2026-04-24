@@ -151,6 +151,7 @@ export function createHttpTransport({
     ? JSON.stringify({
         resource: oauth.resourceUrl,
         authorization_servers: oauth.authorizationServers,
+        scopes_supported: oauth.scopes,
         bearer_methods_supported: ["header"],
       })
     : null;

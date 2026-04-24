@@ -98,7 +98,22 @@ Credentials live in a read-only CSV file.
 The CSV is only ever read; the server never writes to it. Restart the server
 after editing it.
 
-### Step 4 — Connect to Claude Desktop
+### Step 4 — Connect to Claude
+
+**Option A: Claude Code (CLI)**
+
+If you use [Claude Code](https://claude.ai/code), register the server with one
+command (update the path to where you cloned the repo):
+
+```bash
+claude mcp add espm -- node /absolute/path/to/ESPM_MCP/src/main.js
+```
+
+Add `-s user` to make it available across all projects, or `-s project` to
+share it with collaborators via a checked-in `.mcp.json`. Verify with
+`claude mcp list`.
+
+**Option B: Claude Desktop**
 
 Open your Claude Desktop config file:
 
@@ -119,9 +134,10 @@ Add this entry (update the path to where you cloned the repo):
 }
 ```
 
-### Step 5 — Restart Claude Desktop and start asking
+### Step 5 — Restart Claude and start asking
 
-Restart Claude Desktop. You'll see the ESPM tools available. Start asking questions about your portfolio.
+Restart Claude Desktop (or reload your Claude Code session). You'll see the
+ESPM tools available. Start asking questions about your portfolio.
 
 ---
 
@@ -159,6 +175,19 @@ curl -sS -X POST http://127.0.0.1:3000/mcp \
 ```
 
 You should get back the list of all ESPM tools.
+
+### Connect Claude Code to the HTTP server
+
+With the HTTP server running, register it with Claude Code using the `http`
+transport:
+
+```bash
+claude mcp add --transport http espm http://127.0.0.1:3000/mcp
+```
+
+Add `-s user` or `-s project` to change the scope. Verify with
+`claude mcp list`. If you're pointing at a remote/proxied endpoint that
+requires auth, pass headers with `--header "Authorization: Bearer <token>"`.
 
 ### Security
 

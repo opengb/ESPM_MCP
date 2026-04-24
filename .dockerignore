@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+accounts.csv
+*.log
+.DS_Store
+Dockerfile
+.dockerignore
+README.md
+LICENSE

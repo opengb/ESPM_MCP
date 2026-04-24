@@ -5,8 +5,8 @@
  * MCP server + transport per request, no session IDs.
  *
  * Binds to 127.0.0.1 by default. Optional auth: either HTTP Basic
- * (`basicAuth: { user, pass }`) or OAuth 2.0 bearer tokens validated via
- * RFC 7662 introspection (`oauth: { introspectionUrl, clientId, ... }`).
+ * (`basicAuth: { user, pass }`) or OAuth 2.0 bearer tokens verified as JWTs
+ * against a remote JWKS (`oauth: { jwksUrl, issuer, audience, ... }`).
  * At most one of the two may be enabled; omit both for an unauthed endpoint.
  * For TLS, still put a reverse proxy in front — Basic auth alone is cleartext.
  */
@@ -14,6 +14,7 @@
 import { createServer } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createRemoteJWKSet, jwtVerify, errors as joseErrors } from "jose";
 import { createEspmServer } from "../server.js";
 
 function readBody(req) {
@@ -69,26 +70,7 @@ function bearerChallenge({ error, description, scope } = {}) {
   return `Bearer ${parts.join(", ")}`;
 }
 
-async function introspectToken(token, config) {
-  const body = new URLSearchParams({ token, token_type_hint: "access_token" });
-  const creds = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64");
-  const res = await fetch(config.introspectionUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-      Authorization: `Basic ${creds}`,
-    },
-    body,
-    signal: AbortSignal.timeout(config.timeoutMs ?? 5000),
-  });
-  if (!res.ok) {
-    throw new Error(`introspection endpoint returned ${res.status}`);
-  }
-  return res.json();
-}
-
-async function checkBearerAuth(req, config) {
+async function verifyJwt(req, config, jwks) {
   const header = req.headers["authorization"];
   if (!header || typeof header !== "string") {
     return { ok: false, status: 401, challenge: bearerChallenge() };
@@ -102,41 +84,40 @@ async function checkBearerAuth(req, config) {
     };
   }
 
-  let introspection;
+  let payload;
   try {
-    introspection = await introspectToken(token, config);
+    ({ payload } = await jwtVerify(token, jwks, {
+      issuer: config.issuer,
+      audience: config.audience,
+      clockTolerance: 30,
+    }));
   } catch (err) {
-    console.error("ESPM MCP OAuth introspection failed:", err);
-    return {
-      ok: false,
-      status: 503,
-      challenge: bearerChallenge({ error: "temporarily_unavailable", description: "Token introspection failed" }),
-    };
-  }
-
-  if (!introspection || introspection.active !== true) {
-    return {
-      ok: false,
-      status: 401,
-      challenge: bearerChallenge({ error: "invalid_token", description: "Token is not active" }),
-    };
-  }
-
-  if (config.requiredAudience) {
-    const aud = introspection.aud;
-    const auds = Array.isArray(aud) ? aud : aud ? [aud] : [];
-    if (!auds.includes(config.requiredAudience)) {
+    if (err instanceof joseErrors.JWKSTimeout || err instanceof joseErrors.JWKSInvalid) {
+      console.error("ESPM MCP JWKS unavailable:", err);
+      return {
+        ok: false,
+        status: 503,
+        challenge: bearerChallenge({ error: "temporarily_unavailable", description: "JWKS unavailable" }),
+      };
+    }
+    if (err instanceof joseErrors.JOSEError) {
       return {
         ok: false,
         status: 401,
-        challenge: bearerChallenge({ error: "invalid_token", description: "Audience mismatch" }),
+        challenge: bearerChallenge({ error: "invalid_token", description: err.message }),
       };
     }
+    console.error("ESPM MCP JWT verification failed:", err);
+    return {
+      ok: false,
+      status: 503,
+      challenge: bearerChallenge({ error: "temporarily_unavailable", description: "JWT verification failed" }),
+    };
   }
 
   if (config.requiredScope) {
-    const scopes = typeof introspection.scope === "string"
-      ? introspection.scope.split(/\s+/).filter(Boolean)
+    const scopes = typeof payload.scope === "string"
+      ? payload.scope.split(/\s+/).filter(Boolean)
       : [];
     if (!scopes.includes(config.requiredScope)) {
       return {
@@ -165,6 +146,7 @@ export function createHttpTransport({
   }
   const expectedDigest = basicAuth ? sha256(`${basicAuth.user}:${basicAuth.pass}`) : null;
   const basicRealm = `Basic realm="${REALM}"`;
+  const jwks = oauth ? createRemoteJWKSet(new URL(oauth.jwksUrl)) : null;
 
   const httpServer = createServer(async (req, res) => {
     const url = (req.url || "").split("?")[0];
@@ -182,7 +164,7 @@ export function createHttpTransport({
       return;
     }
     if (oauth) {
-      const result = await checkBearerAuth(req, oauth);
+      const result = await verifyJwt(req, oauth, jwks);
       if (!result.ok) {
         writeJsonRpcError(res, result.status, -32001, "Unauthorized", {
           "WWW-Authenticate": result.challenge,

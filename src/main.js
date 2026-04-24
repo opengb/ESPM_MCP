@@ -40,30 +40,26 @@ if (transport === "stdio") {
   }
   const basicAuth = authUser && authPass ? { user: authUser, pass: authPass } : null;
 
-  const oauthIntrospectionUrl = process.env.MCP_HTTP_OAUTH_INTROSPECTION_URL;
-  const oauthClientId = process.env.MCP_HTTP_OAUTH_CLIENT_ID;
-  const oauthClientSecret = process.env.MCP_HTTP_OAUTH_CLIENT_SECRET;
+  const oauthJwksUrl = process.env.MCP_HTTP_OAUTH_JWKS_URL;
+  const oauthIssuerRaw = process.env.MCP_HTTP_OAUTH_ISSUER;
+  const oauthAudience = process.env.MCP_HTTP_OAUTH_AUDIENCE;
   const oauthRequiredScope = process.env.MCP_HTTP_OAUTH_REQUIRED_SCOPE;
-  const oauthRequiredAudience = process.env.MCP_HTTP_OAUTH_REQUIRED_AUDIENCE;
-  if (oauthIntrospectionUrl && (!oauthClientId || !oauthClientSecret)) {
+  const oauthAnySet = oauthJwksUrl || oauthIssuerRaw || oauthAudience || oauthRequiredScope;
+  if (oauthAnySet && (!oauthJwksUrl || !oauthIssuerRaw || !oauthAudience)) {
     console.error(
-      "MCP_HTTP_OAUTH_INTROSPECTION_URL requires MCP_HTTP_OAUTH_CLIENT_ID and MCP_HTTP_OAUTH_CLIENT_SECRET to authenticate to the introspection endpoint."
+      "OAuth requires MCP_HTTP_OAUTH_JWKS_URL, MCP_HTTP_OAUTH_ISSUER, and MCP_HTTP_OAUTH_AUDIENCE to be set together."
     );
     process.exit(1);
   }
-  if (!oauthIntrospectionUrl && (oauthClientId || oauthClientSecret || oauthRequiredScope || oauthRequiredAudience)) {
-    console.error(
-      "MCP_HTTP_OAUTH_* options require MCP_HTTP_OAUTH_INTROSPECTION_URL to be set."
-    );
-    process.exit(1);
-  }
-  const oauth = oauthIntrospectionUrl
+  const issuerList = oauthIssuerRaw
+    ? oauthIssuerRaw.split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
+  const oauth = oauthJwksUrl
     ? {
-        introspectionUrl: oauthIntrospectionUrl,
-        clientId: oauthClientId,
-        clientSecret: oauthClientSecret,
+        jwksUrl: oauthJwksUrl,
+        issuer: issuerList.length === 1 ? issuerList[0] : issuerList,
+        audience: oauthAudience,
         requiredScope: oauthRequiredScope,
-        requiredAudience: oauthRequiredAudience,
       }
     : null;
 

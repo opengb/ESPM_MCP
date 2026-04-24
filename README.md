@@ -161,7 +161,7 @@ Env vars (all optional, see `env.example`):
 - `MCP_HTTP_PORT` — port to listen on (default `3000`)
 - `MCP_HTTP_HOST` — interface to bind (default `127.0.0.1`)
 - `MCP_HTTP_BASIC_AUTH_USER` / `MCP_HTTP_BASIC_AUTH_PASS` — enable HTTP Basic auth on `/mcp` (must be set together; see "Enable HTTP Basic auth" below)
-- `MCP_HTTP_OAUTH_INTROSPECTION_URL` / `MCP_HTTP_OAUTH_CLIENT_ID` / `MCP_HTTP_OAUTH_CLIENT_SECRET` — enable OAuth 2.0 Bearer auth on `/mcp` via RFC 7662 introspection (see "Enable OAuth" below). Mutually exclusive with Basic auth.
+- `MCP_HTTP_OAUTH_JWKS_URL` / `MCP_HTTP_OAUTH_ISSUER` / `MCP_HTTP_OAUTH_AUDIENCE` — enable OAuth 2.0 Bearer auth on `/mcp` via local JWT verification (see "Enable OAuth" below). Mutually exclusive with Basic auth.
 
 The endpoint is `POST /mcp`. The server runs **stateless** — no session IDs,
 one request/response per call — which keeps things simple and works for every
@@ -207,33 +207,41 @@ reverse proxy that terminates TLS.
 ### Enable OAuth
 
 Instead of Basic auth, the `/mcp` endpoint can require OAuth 2.0 Bearer
-tokens validated against your identity provider via
-[RFC 7662 token introspection](https://www.rfc-editor.org/rfc/rfc7662). On each
-request the server posts the submitted access token to the introspection
-endpoint (authenticated with its own client credentials) and accepts the
-request only if the response says `active: true`.
+tokens, verified locally as JWTs against the identity provider's JWKS. On
+each request the server checks the token's signature, `iss`, `aud`, and `exp`
+(with 30s clock tolerance) against the configured JWKS, issuer, and audience.
 
-Set the introspection URL plus the client credentials this server uses to
-authenticate to it:
+All three settings below must be set together:
+
+- `MCP_HTTP_OAUTH_JWKS_URL` — the IdP's JWKS endpoint
+- `MCP_HTTP_OAUTH_ISSUER` — expected `iss` claim; comma-separated list if the IdP emits more than one
+- `MCP_HTTP_OAUTH_AUDIENCE` — expected `aud` claim (typically your OAuth client ID)
+
+Optionally:
+
+- `MCP_HTTP_OAUTH_REQUIRED_SCOPE` — require a specific value in the token's `scope` claim (ignored for token types that omit `scope`, such as Google ID tokens)
+
+**Google Auth Platform example** — verify Google-issued ID tokens intended for
+your OAuth 2.0 Web Client:
 
 ```bash
-MCP_HTTP_OAUTH_INTROSPECTION_URL=https://idp.example.com/oauth2/introspect \
-MCP_HTTP_OAUTH_CLIENT_ID=espm-mcp \
-MCP_HTTP_OAUTH_CLIENT_SECRET=secret \
+MCP_HTTP_OAUTH_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs \
+MCP_HTTP_OAUTH_ISSUER="https://accounts.google.com,accounts.google.com" \
+MCP_HTTP_OAUTH_AUDIENCE=1234567890-abc.apps.googleusercontent.com \
 npm run start:http
 # ESPM MCP HTTP server listening on http://127.0.0.1:3000/mcp (OAuth enabled)
 ```
 
-Optionally enforce scope and/or audience against the introspection response:
+The `AUDIENCE` value is the OAuth 2.0 Client ID from your Google Cloud Auth
+Platform credentials (looks like `<number>-<hash>.apps.googleusercontent.com`).
+Google emits both `https://accounts.google.com` and `accounts.google.com` as
+the `iss` claim depending on the flow, so list both.
 
-- `MCP_HTTP_OAUTH_REQUIRED_SCOPE` — token's `scope` string must contain this value
-- `MCP_HTTP_OAUTH_REQUIRED_AUDIENCE` — token's `aud` claim must contain this value
-
-Hit the protected endpoint with a Bearer token:
+Hit the protected endpoint with the ID token as a Bearer credential:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:3000/mcp \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Authorization: Bearer $ID_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -241,20 +249,24 @@ curl -sS -X POST http://127.0.0.1:3000/mcp \
 
 Failures return a `WWW-Authenticate: Bearer ...` challenge per
 [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750): `invalid_request` (missing
-or malformed Authorization header), `invalid_token` (token not active or
-audience mismatch), `insufficient_scope` (required scope missing), or
-`temporarily_unavailable` (`503`) when the introspection endpoint itself is
-unreachable.
+or malformed Authorization header), `invalid_token` (bad signature, expired,
+wrong issuer/audience), `insufficient_scope` (required scope missing), or
+`temporarily_unavailable` (`503`) when the JWKS endpoint itself is unreachable.
 
 OAuth and Basic auth are mutually exclusive — configuring both fails at
-startup. The server still accepts cleartext HTTP, so terminate TLS at a
-reverse proxy in front of it when exposing the endpoint beyond localhost.
+startup. JWTs are verified locally against a cached JWKS, so there's no
+network call on the hot path after the first fetch. Access tokens are not
+revocation-checked — they remain accepted until `exp`. If you need faster
+revocation, keep token lifetimes short at the IdP.
+
+The server still accepts cleartext HTTP, so terminate TLS at a reverse proxy
+in front of it when exposing the endpoint beyond localhost.
 
 Register it with Claude Code using the `http` transport and a Bearer header:
 
 ```bash
 claude mcp add --transport http espm http://127.0.0.1:3000/mcp \
-  --header "Authorization: Bearer $ACCESS_TOKEN"
+  --header "Authorization: Bearer $ID_TOKEN"
 ```
 
 ### Connect Claude Code to the HTTP server

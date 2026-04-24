@@ -3,6 +3,27 @@
  * Decision-tree checks to determine whether a property's energy data looks legitimate.
  */
 
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+// ─── Expected GFA Data ───────────────────────────────────────────────────────
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// Maps custom-id-1 → expected GFA (m²)
+const expectedGfaMap = new Map();
+
+try {
+  const gfaPath = join(__dirname, "../melody-workflow-resources/crd_expected_gfa.csv");
+  const text = readFileSync(gfaPath, "utf8");
+  for (const line of text.split("\n").slice(1)) {
+    const [customId, gfa] = line.split(",").map((s) => s.trim());
+    if (customId && gfa) expectedGfaMap.set(customId, parseFloat(gfa));
+  }
+} catch {
+  // GFA file not available — GFA checks will be skipped
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function isBcHydroSource(auditField) {
@@ -90,9 +111,109 @@ async function getMeterConsumptionData(meterId, startDate, endDate, accountName,
   };
 }
 
+// ─── Aggregation Guidance ─────────────────────────────────────────────────────
+
+const AGGREGATION_GUIDANCE = `You must now determine whether this property type would be expected to have an aggregated meter.
+
+An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts. Use the property type to judge this:
+
+LIKELY NEEDS aggregated meter:
+- Multifamily Housing / Strata — many residential units, each with their own BC Hydro account
+- Senior Living Community / Assisted Living — many residential units
+- Residence Hall / Dormitory — many residential units
+- Mixed Use Property — residential + commercial units
+- Hotel / Resort — many individually-metered rooms possible
+
+LIKELY DOES NOT need aggregated meter:
+- Office / Warehouse / Retail — typically one or a few commercial accounts
+- K-12 School / Library / Fire Station / Worship Facility — single account
+- Swimming Pool / Recreation Centre — single account
+- Parking — single account
+
+When in doubt, lean toward expecting an aggregated meter.
+
+If an aggregated meter IS expected, check the meters list for one that has aggregateMeter=true or whose name contains "aggregated", "suites", "units", or "residents". If found, the property data looks good. If not found, the building owner should be contacted.
+
+If an aggregated meter is NOT expected, the property data looks good.`;
+
+// ─── BC Hydro Sharing Check ──────────────────────────────────────────────────
+// The ESPM API has no endpoint for property-level sharing. We scrape the
+// ESPM web UI property summary page which embeds a JSON shares array.
+
+const sessionCache = new Map(); // username → sessionCookie
+
+async function getEspmWebSession(username, password, env) {
+  const cached = sessionCache.get(username);
+  if (cached) return cached;
+
+  const baseUrl = env === "live"
+    ? "https://portfoliomanager.energystar.gov/pm"
+    : "https://portfoliomanager.energystar.gov/pmtest";
+
+  const loginPage = await fetch(`${baseUrl}/login`, {
+    headers: { "User-Agent": "Mozilla/5.0" },
+  });
+  const initCookie = loginPage.headers.get("set-cookie")?.split(";")[0];
+
+  const loginRes = await fetch(`${baseUrl}/login`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Cookie": initCookie,
+    },
+    body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+  });
+
+  const session = loginRes.headers.get("set-cookie")?.split(";")[0] || initCookie;
+  sessionCache.set(username, { cookie: session, baseUrl });
+  return { cookie: session, baseUrl };
+}
+
+async function checkBcHydroSharing(propertyId, deps) {
+  try {
+    const { resolveCredentials } = deps;
+    // Try each account until we get the property page
+    const { accounts } = deps;
+    for (const [name] of accounts) {
+      try {
+        const { username, password, env } = resolveCredentials(name);
+        const { cookie, baseUrl } = await getEspmWebSession(username, password, env);
+
+        const res = await fetch(`${baseUrl}/property/${propertyId}`, {
+          headers: { "User-Agent": "Mozilla/5.0", "Cookie": cookie },
+        });
+        if (!res.ok) continue;
+
+        const html = await res.text();
+        const sharesMatch = html.match(/\[\{&quot;contactId&quot;.*?\}\]/);
+        if (!sharesMatch) return { shared: false, customerName: null };
+
+        const decoded = sharesMatch[0].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+        const shares = JSON.parse(decoded);
+        const bcHydro = shares.find((s) =>
+          /bc.?hydro/i.test(s.contactName || "") || /bc.?hydro/i.test(s.contactUsername || "")
+        );
+
+        return {
+          shared: !!bcHydro,
+          customerName: bcHydro?.contactName || null,
+          allShares: shares.map((s) => s.contactName),
+        };
+      } catch {
+        continue;
+      }
+    }
+    return { shared: false, customerName: null };
+  } catch {
+    return { shared: false, customerName: null };
+  }
+}
+
 // ─── Main Workflow ───────────────────────────────────────────────────────────
 
-async function suspiciousDataCheck(propertyId, accountName, deps) {
+async function suspiciousDataCheck(propertyId, accountName, deps, { customId } = {}) {
   const { getProperty, accounts } = deps;
   const steps = [];
 
@@ -151,6 +272,49 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
   };
 
   const propertyType = property.primaryFunction || "Unknown";
+  const isCrd = resolvedAccountName === "CRDBenchmarking";
+
+  // ─── GFA Check (independent, CRD only) ───
+  let gfaFlag = null; // null = not checked, "pass" or "fail"
+  let gfaDetails = null;
+  if (isCrd) {
+    steps.push({ check: "GFA check (CRD)", status: "running" });
+    if (!customId) {
+      steps[steps.length - 1].status = "done";
+      steps[steps.length - 1].result = "Custom ID not provided — GFA check skipped";
+    } else {
+      const expectedGfa = expectedGfaMap.get(customId);
+      if (expectedGfa == null) {
+        steps[steps.length - 1].status = "done";
+        steps[steps.length - 1].result = `Custom ID ${customId} not found in expected GFA list — GFA check skipped`;
+      } else {
+        const actualGfa = parseFloat(property.grossFloorArea);
+        if (isNaN(actualGfa)) {
+          steps[steps.length - 1].status = "done";
+          steps[steps.length - 1].result = "No GFA value in ESPM — GFA check skipped";
+        } else {
+          const pctDiff = Math.abs(actualGfa - expectedGfa) / expectedGfa;
+          gfaDetails = {
+            customId,
+            actualGfa: Math.round(actualGfa * 100) / 100,
+            expectedGfa: Math.round(expectedGfa * 100) / 100,
+            pctDiff: Math.round(pctDiff * 1000) / 10,
+          };
+          if (pctDiff > 0.4) {
+            gfaFlag = "fail";
+            steps[steps.length - 1].status = "done";
+            steps[steps.length - 1].result = `ESPM GFA (${gfaDetails.actualGfa} m²) differs from expected (${gfaDetails.expectedGfa} m²) by ${gfaDetails.pctDiff}% — exceeds 40% threshold`;
+          } else {
+            gfaFlag = "pass";
+            steps[steps.length - 1].status = "done";
+            steps[steps.length - 1].result = `ESPM GFA (${gfaDetails.actualGfa} m²) vs expected (${gfaDetails.expectedGfa} m²) — ${gfaDetails.pctDiff}% difference, within threshold`;
+          }
+        }
+      }
+    }
+  }
+
+  const gfaResult = { gfaFlag, gfaDetails, customId: customId || null };
 
   // STEP 2: Check meter access
   steps.push({ check: "Check meter access", status: "running" });
@@ -173,13 +337,11 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
   if (!hasMeterAccess) {
     steps[steps.length - 1].nextAction = "No meter access → checking if property is shared with BC Hydro";
 
-    // TODO: Check whether this specific property has been shared with BC Hydro.
-    // The ESPM API has no endpoint for property-level sharing. This will require
-    // scraping the ESPM web UI property summary page to read the "Sharing this
-    // Property" table. For now, we always return false.
     steps.push({ check: "Check if property is shared with BC Hydro", status: "done" });
-    const bcHydroShared = false;
-    steps[steps.length - 1].result = "Unable to verify (property-level sharing check not yet implemented)";
+    const { shared: bcHydroShared } = await checkBcHydroSharing(propertyId, deps);
+    steps[steps.length - 1].result = bcHydroShared
+      ? "Shared with BC Hydro"
+      : "Not shared with BC Hydro";
 
     if (!bcHydroShared) {
       return {
@@ -188,6 +350,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
         propertyType,
         steps,
         bcHydroConnected: false,
+        ...gfaResult,
         outcome: "suspicious",
         message:
           "We cannot see the meters and cannot yet verify whether the property has been shared with BC Hydro. The building owner should be contacted.",
@@ -198,12 +361,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
   // ─── BRANCH B: Have meter access ───
   steps[steps.length - 1].nextAction = "Have meter access → checking data source on each meter";
 
-  // TODO: Check whether this specific property has been shared with BC Hydro.
-  // The ESPM API has no endpoint for property-level sharing. This will require
-  // scraping the ESPM web UI property summary page to read the "Sharing this
-  // Property" table. For now, we always return false.
-  const bcHydroConnected = false;
-  const bcHydroCustomerName = null;
+  const { shared: bcHydroConnected, customerName: bcHydroCustomerName } = await checkBcHydroSharing(propertyId, deps);
 
   // STEP B1: Check meter data source
   steps.push({ check: "Check meter data source (BC Hydro vs manual)", status: "running" });
@@ -252,6 +410,12 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
       aggregateMeter: m.aggregateMeter,
     }));
 
+    // Shared with BC Hydro check
+    steps.push({ check: "Shared with BC Hydro", status: "done" });
+    steps[steps.length - 1].result = bcHydroConnected
+      ? `Yes ("${bcHydroCustomerName}")`
+      : "Not shared with BC Hydro";
+
     if (!bcHydroConnected) {
       return {
         propertyId,
@@ -261,9 +425,10 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
         meters: visibleMeters,
         bcHydroConnected,
         bcHydroCustomerName,
+        ...gfaResult,
         outcome: "suspicious",
         message:
-          "The property has not been shared with BC Hydro. We cannot read the meter data. The building owner should be contacted.",
+          "Data could not be verified — property not shared with BC Hydro, and we don't have access to the meters. The building owner should be contacted.",
       };
     }
 
@@ -276,8 +441,9 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
       meters: visibleMeters,
       bcHydroConnected,
       bcHydroCustomerName,
+      ...gfaResult,
       outcome: "requires_aggregation_judgment",
-      message: `The property is shared with BC Hydro but we cannot read the meter data. You must now determine whether this property type ("${propertyType}") would be expected to have an aggregated meter. An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts — use your judgment based on the property type. If an aggregated meter IS expected, check the meters list for one that has aggregateMeter=true or whose name contains "aggregated", "suites", "units", or "residents". If found, the property data looks good. If not found, the building owner should be contacted. If an aggregated meter is NOT expected, the property data looks good.`,
+      message: `The property is shared with BC Hydro but we cannot read the meter data. Property type: "${propertyType}". ${AGGREGATION_GUIDANCE}`,
     };
   }
 
@@ -289,6 +455,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
     meters: meterDetails,
     bcHydroConnected,
     bcHydroCustomerName,
+    ...gfaResult,
   };
 
   if (!anyBcHydro) {
@@ -304,63 +471,30 @@ async function suspiciousDataCheck(propertyId, accountName, deps) {
   return {
     ...baseResult,
     outcome: "requires_aggregation_judgment",
-    message: `The meter data is from BC Hydro Web Services. You must now determine whether this property type ("${propertyType}") would be expected to have an aggregated meter. An aggregated meter is expected when the property would have 3 or more commercial BC Hydro accounts or 5 or more residential BC Hydro accounts — use your judgment based on the property type. If an aggregated meter is NOT expected, the property data looks good. If an aggregated meter IS expected, check the meters list above for one that has aggregateMeter=true or whose name contains "aggregated", "suites", "units", or "residents". If found, the property data looks good. If not found, show the property type and meter list and report that an aggregated meter was expected but not found — the property owner should be contacted.`,
+    message: `The meter data is from BC Hydro Web Services. Property type: "${propertyType}". ${AGGREGATION_GUIDANCE}`,
   };
 }
 
-// ─── Display Instructions ────────────────────────────────────────────────────
+// ─── Email Template & Display Instructions ───────────────────────────────────
 
-const DISPLAY_INSTRUCTIONS = `
-IMPORTANT: Always present suspicious data check results in this compact format. Do NOT use tables. Do NOT add extra commentary beyond the verdict line.
+const EMAIL_TEMPLATE_INSTRUCTIONS = `
+If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict. If contactEmail is present in the result, print "To: [contactEmail]" above the email.
 
-**Suspicious Data Check — [propertyName] (ID: [propertyId])**
-
-[propertyName], [address]
-[propertyType] | Account: [account]
-
-Then print ONE line per check that was actually performed, using the data from "steps" and "meters". Use ✅ for pass and ⚠️ for problems. Examples:
-
-Meter access: ✅ 4 meters found
-BC Hydro connected: ✅ Yes ("BC Hydro Web Services")
-Data source: ✅ 2 electric meters from BC Hydro Web Services
-Aggregated meter: ✅ Found ("meter name here")
-
-Or:
-
-Meter access: ✅ 2 meters found
-BC Hydro connected: ⚠️ No
-Data source: ⚠️ All meter data was manually entered (not from BC Hydro Web Services)
-
-Or:
-
-Meter access: ⚠️ No meter access
-BC Hydro connected: ⚠️ Not found in connected customers
-
-Always show the BC Hydro connection status if bcHydroConnected is present in the result. Only show other checks that were actually run — do not show skipped branches.
-
-End with:
-
-Verdict: ✅ Property data looks good.
-— or —
-Verdict: ⚠️ [message from the result, e.g. "The property owner should be contacted."]
-— or —
-Verdict: ❌ [error message]
-
-If outcome is "requires_aggregation_judgment", make your judgment about whether the property type needs an aggregated meter, then print the verdict as ✅ or ⚠️ accordingly. Add one brief sentence explaining your reasoning.
-
-If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict.
+There are THREE email templates depending on what failed. Check gfaFlag and the meter outcome to determine which:
+- If ONLY the GFA check failed (gfaFlag is "fail" and meter checks passed): use the GFA TEMPLATE
+- If ONLY the meter checks failed (gfaFlag is not "fail"): use the METER TEMPLATE
+- If BOTH failed: use the HYBRID TEMPLATE
 
 CRITICAL: Copy the template below VERBATIM. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
+- Replace {{CONTACT_NAME}} with the contactName from the result if present, otherwise use "x"
 - Replace {{PROPERTY_NAME}} with the actual property name
 - Replace {{PROPERTY_ID}} with the actual property ID
 - Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")
 - Include or exclude entire paragraphs based on the conditions noted — but never change the wording of a paragraph you include.
 
----
+===== METER TEMPLATE (use when only meter checks failed) =====
 
-DRAFT EMAIL:
-
-Hi x,
+Hi {{CONTACT_NAME}},
 
 Thank you for submitting your building {{PROPERTY_NAME}} (ID: {{PROPERTY_ID}}) to the Building Owner Portal!
 
@@ -375,8 +509,93 @@ Once this information has been added in ENERGY STAR Portfolio Manager, please cl
 
 If you have any questions, please let us know.
 
----
+===== GFA TEMPLATE (use when only GFA check failed) =====
+
+Hi {{CONTACT_NAME}},
+
+Thank you for submitting your building {{PROPERTY_NAME}} (CRD ID: {{CUSTOM_ID}}) to the Building Owner Portal (https://bop.opentech.eco/orgs/crd). Upon our review, the energy data looks complete but we wanted to flag a discrepancy between the Gross Floor Area entered into ESPM ({{ESPM_GFA}} m²) and the GFA on our covered buildings list ({{EXPECTED_GFA}} m²). To be clear, the Gross Floor Area on our covered buildings list is an estimated value, but we would like to double check that you are using the GFA definition from ENERGY STAR Portfolio Manager (ESPM Resource), not another measure of floor area.
+
+Please confirm, and if you have access to documentation such as building floor plans, architectural drawings, engineering reports, or insurance documents please share so that we can update our program's buildings list if needed.
+
+If you have any questions, please let us know.
+
+===== HYBRID TEMPLATE (use when BOTH GFA and meter checks failed) =====
+
+Hi {{CONTACT_NAME}},
+
+Thank you for submitting your building {{PROPERTY_NAME}} (CRD ID: {{CUSTOM_ID}}) to the Building Owner Portal (https://bop.opentech.eco/orgs/crd). Upon our review, we wanted to flag a couple of items:
+
+1. There is a discrepancy between the Gross Floor Area entered into ESPM ({{ESPM_GFA}} m²) and the GFA on our covered buildings list ({{EXPECTED_GFA}} m²). To be clear, the Gross Floor Area on our covered buildings list is an estimated value, but we would like to double check that you are using the GFA definition from ENERGY STAR Portfolio Manager (ESPM Resource), not another measure of floor area. Please confirm, and if you have access to documentation such as building floor plans, architectural drawings, engineering reports, or insurance documents please share so that we can update our program's buildings list if needed.
+
+2. The energy usage data submitted appears incomplete based on typical Site EUI ranges. Please add all meters and energy sources (examples include: {{METER_TYPES}}) for the entire building and verify the units of the energy data submitted.
+
+[Include the next paragraph ONLY if an aggregated meter is expected based on property type:]
+For Strata buildings, please ensure that you have reported the Electricity consumption data from the Common Area meter as well as the residential units. BC Hydro can help you aggregate the Electricity data for stratas with more than 5 residential accounts. You can find the instructions in our Data Aggregation article in Part 1 of our knowledge base.
+
+We'd also like to point out that it's an option to set up the automatic data exchange with BC Hydro or FortisBC by following the instructions in our knowledge base, which can replace manual data entry: https://support.crdbenchmarking.ca/portal/en/kb/articles/3-1-how-to-add-energy-data-automatically-set-up-data-exchange-with-utility-provider-s-in-espm
+
+Once this information has been added in ENERGY STAR Portfolio Manager, please click resubmit in the Building Owner Portal to complete your submission.
+
+If you have any questions, please let us know.
+
+=====
 `;
+
+const DISPLAY_INSTRUCTIONS = `
+IMPORTANT: Always present suspicious data check results in this compact format. Do NOT use tables. Do NOT add extra commentary beyond the verdict line.
+
+**Suspicious Data Check — [propertyName] (ID: [propertyId])**
+
+[propertyName], [address]
+[propertyType] | Account: [account]
+
+Then print a bulleted list with ONE bullet per check that was actually traversed. Each check MUST be on its own line — NEVER combine two checks into one bullet. Be concise — one short sentence per bullet.
+
+- GFA check: [✅/⚠️/skipped] [short result] (only for CRD properties)
+- Meter access: [✅/⚠️] [short result]
+- Shared with BC Hydro: [✅/⚠️] [short result] (when meter access is denied or consumption data is unreadable)
+- BC Hydro data source: [✅/⚠️] [short result]
+- Aggregated meter needed: [✅/⚠️] [short result]
+- Aggregated meter found: [✅/⚠️] [short result]
+
+Only show bullets for checks that were actually traversed — omit skipped checks. NEVER merge two checks into a single bullet point.
+
+End with:
+
+Verdict: ✅ Property data looks good.
+— or —
+Verdict: ⚠️ [short reason]. The property owner should be contacted.
+
+If outcome is "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
+${EMAIL_TEMPLATE_INSTRUCTIONS}`;
+
+const BATCH_DISPLAY_INSTRUCTIONS = `
+IMPORTANT: Present batch suspicious data check results as follows.
+
+First, process ALL properties and make your judgments for any with outcome "requires_aggregation_judgment". Then print a summary with the FINAL counts after your judgments:
+
+**Suspicious Data Check — [totalProperties] properties checked**
+
+✅ Looks good: [count] | ⚠️ Flagged: [count]
+
+Count properties as flagged if their outcome is "suspicious" OR if you judged "requires_aggregation_judgment" as ⚠️. Count as looks good if outcome is "looks_good" OR if you judged "requires_aggregation_judgment" as ✅. Do NOT use any pre-computed summary — compute the counts yourself after making all judgments.
+
+Then for EACH property, print a block with a bulleted list of checks. Each check MUST be its own bullet point — never combine checks on one line. Be concise — no extra commentary.
+
+**[propertyName] (ID: [propertyId])** — [propertyType]
+
+- GFA check: [✅/⚠️/skipped] [short result] (only for CRD properties)
+- Meter access: [✅/⚠️] [short result]
+- BC Hydro data source: [✅/⚠️] [short result]
+- Aggregated meter needed: [✅/⚠️] [short result]
+- Aggregated meter found: [✅/⚠️] [short result]
+
+Verdict: [✅/⚠️] [short verdict]
+
+Only show bullets for checks that were actually traversed — omit checks that were skipped. Keep each bullet to one short sentence. For "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
+
+If the property was flagged (⚠️), print the draft email immediately after that property's verdict, before moving on to the next property.
+${EMAIL_TEMPLATE_INSTRUCTIONS}`;
 
 // ─── Tool Definitions & Handler ──────────────────────────────────────────────
 
@@ -424,18 +643,75 @@ export function getTools(ACCOUNT_NAME_PROP) {
     },
     {
       name: "suspicious_data_check",
-      description:
-        "Investigate whether a property's energy data looks legitimate or suspicious. Runs a step-by-step decision tree: checks meter access, data source (BC Hydro Web Services vs manual entry), and whether an aggregated meter is present when expected. Returns a detailed narrative of each check, its result, and a final verdict.",
+      description: `Investigate whether a property's energy data looks legitimate or suspicious.
+
+HOW IT WORKS:
+This tool runs a decision tree of checks on each property to determine if its energy data is trustworthy:
+
+1. GFA check (CRD only) — Is the Gross Floor Area in ESPM within 40% of the expected value? Requires custom_id.
+2. Meter access — Can we see the property's meters in ESPM?
+3. Data source — Was the meter data populated by BC Hydro Web Services, or manually entered?
+4. Aggregated meter — For property types with many units (e.g. multifamily, strata), is there an aggregated electricity meter from BC Hydro?
+
+The GFA check runs independently alongside the meter checks. A property is flagged if EITHER check fails.
+
+Meter decision tree:
+  Meter access?
+  ├── YES → Data from BC Hydro?
+  │   ├── YES → Aggregated meter needed?
+  │   │   ├── YES → Aggregated meter found?
+  │   │   │   ├── YES → ✅ Looks good
+  │   │   │   └── NO → ⚠️ Contact owner
+  │   │   └── NO → ✅ Looks good
+  │   └── NO → ⚠️ Manually entered data, contact owner
+  └── NO → Shared with BC Hydro?
+      ├── YES → Aggregated meter needed?
+      │   ├── YES → ⚠️ Contact owner
+      │   └── NO → ✅ Looks good
+      └── NO → ⚠️ Contact owner
+
+USAGE:
+- Single property: provide property_id (e.g. "88547924")
+- Batch check: provide property_ids array (e.g. ["88547924", "9976853"])
+- From a file: upload a CSV or Excel file with a "pm-property-id" column
+
+When flagged ⚠️, a draft email to the building owner is generated.
+
+IMPORTANT: If the user uploads or provides a CSV or Excel file, you MUST read the file contents and extract these columns, passing them as the corresponding parameters:
+- 'pm-property-id' → property_ids (array)
+- 'custom-id-1' → custom_ids (object mapping pm-property-id to custom-id-1)
+- 'data-contact-name' → contact_names (object mapping pm-property-id to name)
+- 'data-contact-email' → contact_emails (object mapping pm-property-id to email)
+Do NOT pass a file path — this tool cannot read files directly.`,
       inputSchema: {
         type: "object",
         properties: {
           property_id: {
             type: "string",
-            description: "The ESPM property ID to investigate",
+            description: "A single ESPM property ID to investigate.",
           },
-          ...ACCOUNT_NAME_PROP,
+          custom_id: {
+            type: "string",
+            description: "The CRD custom ID for a single property (used for GFA check). Optional — if omitted for a CRD property, GFA check is skipped.",
+          },
+          property_ids: {
+            type: "array",
+            items: { type: "string" },
+            description: "An array of ESPM property IDs to check in batch.",
+          },
+          custom_ids: {
+            type: "object",
+            description: "A mapping of pm-property-id to custom-id-1 (from the 'custom-id-1' column in an uploaded file). Used for GFA checks. Example: {\"88547924\": \"43893\"}",
+          },
+          contact_names: {
+            type: "object",
+            description: "A mapping of pm-property-id to data-contact-name. Example: {\"88547924\": \"John Smith\"}",
+          },
+          contact_emails: {
+            type: "object",
+            description: "A mapping of pm-property-id to data-contact-email. Example: {\"88547924\": \"admin@example.com\"}",
+          },
         },
-        required: ["property_id"],
       },
     },
   ];
@@ -454,9 +730,40 @@ export async function handleTool(name, args, deps) {
         deps
       );
     case "suspicious_data_check": {
-      const result = await suspiciousDataCheck(args.property_id, args.account_name, deps);
-      result._displayInstructions = DISPLAY_INSTRUCTIONS;
-      return result;
+      // Determine property IDs: from array or single ID
+      let propertyIds;
+      if (args.property_ids && args.property_ids.length > 0) {
+        propertyIds = args.property_ids;
+      } else if (args.property_id) {
+        // Single property — run and return directly
+        const result = await suspiciousDataCheck(args.property_id, args.account_name, deps, { customId: args.custom_id });
+        result._displayInstructions = DISPLAY_INSTRUCTIONS;
+        return result;
+      } else {
+        return { error: "Provide property_id or property_ids." };
+      }
+
+      if (propertyIds.length === 0) {
+        return { error: "No property IDs found." };
+      }
+
+      // Batch mode
+      const customIds = args.custom_ids || {};
+      const contactNames = args.contact_names || {};
+      const contactEmails = args.contact_emails || {};
+      const results = [];
+      for (const pid of propertyIds) {
+        const result = await suspiciousDataCheck(pid, args.account_name, deps, { customId: customIds[pid] });
+        if (contactNames[pid]) result.contactName = contactNames[pid];
+        if (contactEmails[pid]) result.contactEmail = contactEmails[pid];
+        results.push(result);
+      }
+
+      return {
+        _displayInstructions: BATCH_DISPLAY_INSTRUCTIONS,
+        totalProperties: propertyIds.length,
+        results,
+      };
     }
     default:
       return null;

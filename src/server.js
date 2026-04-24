@@ -732,7 +732,7 @@ export function createEspmServer() {
           result = await getEnergyStarCertificationSummary(args.year, args.account_name);
           break;
         default: {
-          const suspiciousDataDeps = { espmGet, arrayify, extractLinkId, extractText, getProperty, accounts };
+          const suspiciousDataDeps = { espmGet, arrayify, extractLinkId, extractText, getProperty, accounts, resolveCredentials };
           result = await handleSuspiciousDataTool(name, args, suspiciousDataDeps);
           if (result === null) throw new Error(`Unknown tool: ${name}`);
           break;

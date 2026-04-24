@@ -137,13 +137,78 @@ If an aggregated meter IS expected, check the meters list for one that has aggre
 If an aggregated meter is NOT expected, the property data looks good.`;
 
 // ─── BC Hydro Sharing Check ──────────────────────────────────────────────────
+// The ESPM API has no endpoint for property-level sharing. We scrape the
+// ESPM web UI property summary page which embeds a JSON shares array.
 
-// TODO: Check whether this specific property has been shared with BC Hydro.
-// The ESPM API has no endpoint for property-level sharing. This will require
-// scraping the ESPM web UI property summary page to read the "Sharing this
-// Property" table. For now, we always return false.
-function checkBcHydroSharing(/* propertyId, deps */) {
-  return { shared: false, customerName: null };
+const sessionCache = new Map(); // username → sessionCookie
+
+async function getEspmWebSession(username, password, env) {
+  const cached = sessionCache.get(username);
+  if (cached) return cached;
+
+  const baseUrl = env === "live"
+    ? "https://portfoliomanager.energystar.gov/pm"
+    : "https://portfoliomanager.energystar.gov/pmtest";
+
+  const loginPage = await fetch(`${baseUrl}/login`, {
+    headers: { "User-Agent": "Mozilla/5.0" },
+  });
+  const initCookie = loginPage.headers.get("set-cookie")?.split(";")[0];
+
+  const loginRes = await fetch(`${baseUrl}/login`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Cookie": initCookie,
+    },
+    body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+  });
+
+  const session = loginRes.headers.get("set-cookie")?.split(";")[0] || initCookie;
+  sessionCache.set(username, { cookie: session, baseUrl });
+  return { cookie: session, baseUrl };
+}
+
+async function checkBcHydroSharing(propertyId, deps) {
+  try {
+    const { resolveCredentials } = deps;
+    // Try each account until we get the property page
+    const { accounts } = deps;
+    for (const [name] of accounts) {
+      try {
+        const { username, password, env } = resolveCredentials(name);
+        const { cookie, baseUrl } = await getEspmWebSession(username, password, env);
+
+        const res = await fetch(`${baseUrl}/property/${propertyId}`, {
+          headers: { "User-Agent": "Mozilla/5.0", "Cookie": cookie },
+        });
+        if (!res.ok) continue;
+
+        const html = await res.text();
+        const sharesMatch = html.match(/\[\{&quot;contactId&quot;.*?\}\]/);
+        if (!sharesMatch) return { shared: false, customerName: null };
+
+        const decoded = sharesMatch[0].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+        const shares = JSON.parse(decoded);
+        const bcHydro = shares.find((s) =>
+          /bc.?hydro/i.test(s.contactName || "") || /bc.?hydro/i.test(s.contactUsername || "")
+        );
+
+        return {
+          shared: !!bcHydro,
+          customerName: bcHydro?.contactName || null,
+          allShares: shares.map((s) => s.contactName),
+        };
+      } catch {
+        continue;
+      }
+    }
+    return { shared: false, customerName: null };
+  } catch {
+    return { shared: false, customerName: null };
+  }
 }
 
 // ─── Main Workflow ───────────────────────────────────────────────────────────
@@ -273,7 +338,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
     steps[steps.length - 1].nextAction = "No meter access → checking if property is shared with BC Hydro";
 
     steps.push({ check: "Check if property is shared with BC Hydro", status: "done" });
-    const { shared: bcHydroShared } = checkBcHydroSharing();
+    const { shared: bcHydroShared } = await checkBcHydroSharing(propertyId, deps);
     steps[steps.length - 1].result = bcHydroShared
       ? "Shared with BC Hydro"
       : "Not shared with BC Hydro";
@@ -296,7 +361,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
   // ─── BRANCH B: Have meter access ───
   steps[steps.length - 1].nextAction = "Have meter access → checking data source on each meter";
 
-  const { shared: bcHydroConnected, customerName: bcHydroCustomerName } = checkBcHydroSharing();
+  const { shared: bcHydroConnected, customerName: bcHydroCustomerName } = await checkBcHydroSharing(propertyId, deps);
 
   // STEP B1: Check meter data source
   steps.push({ check: "Check meter data source (BC Hydro vs manual)", status: "running" });

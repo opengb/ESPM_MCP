@@ -478,7 +478,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
 // ─── Email Template & Display Instructions ───────────────────────────────────
 
 const EMAIL_TEMPLATE_INSTRUCTIONS = `
-If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict. If contactEmail is present in the result, print "To: [contactEmail]" above the email.
+If the verdict is ⚠️ (the property owner should be contacted), also print a draft email below the verdict. If contactEmail is present in the result, print "To: [contactEmail]" above the email. Always include this link after each draft email: [Compose in Zoho Mail](https://mail.zohocloud.ca/zm/#compose)
 
 There are THREE email templates depending on what failed. Check gfaFlag and the meter outcome to determine which:
 - If ONLY the GFA check failed (gfaFlag is "fail" and meter checks passed): use the GFA TEMPLATE
@@ -486,7 +486,7 @@ There are THREE email templates depending on what failed. Check gfaFlag and the 
 - If BOTH failed: use the HYBRID TEMPLATE
 
 CRITICAL: Copy the template below VERBATIM. Do NOT rephrase, reword, or paraphrase any sentence. The ONLY changes allowed are:
-- Replace {{CONTACT_NAME}} with the contactName from the result if present, otherwise use "x"
+- Replace {{CONTACT_NAME}} with the contact's FIRST NAME ONLY (e.g. "John Smith" → "John"). If contactName is not present, use "x"
 - Replace {{PROPERTY_NAME}} with the actual property name
 - Replace {{PROPERTY_ID}} with the actual property ID
 - Replace {{METER_TYPES}} with the actual meter types from the data (e.g. "Natural Gas" or "District Energy")

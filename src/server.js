@@ -478,7 +478,7 @@ async function getEnergyStarCertificationSummary(year, accountName) {
   };
 }
 
-const { getMeterConsumption, checkAggregatedMeters, runDataQualityCheck } =
+const { getMeterConsumption, checkAggregatedMeters, runDataQualityCheck, detectFaultyDataPoints, runFullDiagnostic } =
   setupDiagnostics({ espmGet, arrayify, safeNum, extractText, extractLinkId, getProperty, getPropertyMetrics });
 
 async function getPortfolioSummary(accountName) {
@@ -685,9 +685,23 @@ export function createEspmServer() {
         inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
       },
       {
+        name: "run_full_diagnostic",
+        description:
+          "Run a complete VAM readiness diagnostic on a property. Checks meter configuration (aggregated meters, coverage gaps, EUI benchmarks, manual entry) AND scans all monthly readings for faulty data points (negatives, isolated zeros, zero sequences, spikes/drops vs adjacent months). Returns a unified report with all issues and a recommended VAM calibration strategy. Use this as the primary entry point for any property data quality investigation.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: { type: "string", description: "The ESPM property ID" },
+            year: { type: "number", description: "Year to check readings for (defaults to last full year)" },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["property_id"],
+        },
+      },
+      {
         name: "run_data_quality_check",
         description:
-          "Run a full data quality diagnostic on a property before a VAM run. Checks for aggregated meters, missing electricity/gas meters, solar net metering, suspiciously low EUI (partial coverage), and manual data entry. Returns a structured report with a vamReadiness assessment.",
+          "Run a meter-level data quality diagnostic on a property before a VAM run. Checks for aggregated meters, missing electricity/gas meters, solar net metering, suspiciously low EUI (partial coverage), and manual data entry. Returns a structured report with a vamReadiness assessment. For a full diagnostic including per-reading fault detection, use run_full_diagnostic instead.",
         inputSchema: {
           type: "object",
           properties: {
@@ -719,6 +733,20 @@ export function createEspmServer() {
           type: "object",
           properties: {
             property_id: { type: "string", description: "The ESPM property ID" },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["property_id"],
+        },
+      },
+      {
+        name: "detect_faulty_data_points",
+        description:
+          "Scan all meters on a property for faulty individual readings: negative values, isolated zeros (likely missed reads), consecutive zero sequences (missing data periods), and anomalous spikes or drops vs adjacent months. Returns flagged readings with recommendations to null them in ESPM before VAM calibration.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: { type: "string", description: "The ESPM property ID" },
+            year: { type: "number", description: "Year to check (defaults to last full year)" },
             ...ACCOUNT_NAME_PROP,
           },
           required: ["property_id"],
@@ -784,6 +812,9 @@ export function createEspmServer() {
         case "get_portfolio_summary":
           result = await getPortfolioSummary(args.account_name);
           break;
+        case "run_full_diagnostic":
+          result = await runFullDiagnostic(args.property_id, args.year, args.account_name);
+          break;
         case "run_data_quality_check":
           result = await runDataQualityCheck(args.property_id, args.account_name);
           break;
@@ -792,6 +823,9 @@ export function createEspmServer() {
           break;
         case "check_aggregated_meters":
           result = await checkAggregatedMeters(args.property_id, args.account_name);
+          break;
+        case "detect_faulty_data_points":
+          result = await detectFaultyDataPoints(args.property_id, args.year, args.account_name);
           break;
         case "get_energy_star_certification_summary":
           result = await getEnergyStarCertificationSummary(args.year, args.account_name);

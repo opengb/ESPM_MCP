@@ -44,6 +44,12 @@ const csvPath = process.env.ESPM_ACCOUNTS_CSV
   ? process.env.ESPM_ACCOUNTS_CSV
   : join(__dirname, "../accounts.csv");
 
+// Inline CSV content takes precedence over the file. Unescape \n so PaaS
+// platforms that can't store literal newlines in env vars still work.
+const csvEnvData = process.env.ESPM_ACCOUNTS_CSV_DATA
+  ? process.env.ESPM_ACCOUNTS_CSV_DATA.replace(/\\n/g, "\n")
+  : null;
+
 // Parse a CSV string into an array of records. Handles quoted fields and
 // escaped double quotes (""). Strict enough for a credentials file; not a
 // full RFC 4180 parser.
@@ -89,11 +95,17 @@ function parseCsv(text) {
   return rows;
 }
 
-function loadAccounts(path) {
+function loadAccounts(path, rawContent = null) {
   const map = new Map();
-  if (!existsSync(path)) return map;
+  let text;
+  if (rawContent != null) {
+    text = rawContent;
+  } else {
+    if (!existsSync(path)) return map;
+    text = readFileSync(path, "utf8");
+  }
 
-  const records = parseCsv(readFileSync(path, "utf8"));
+  const records = parseCsv(text);
   if (records.length === 0) return map;
 
   const header = records[0].map((h) => h.trim().toLowerCase());
@@ -125,7 +137,7 @@ function loadAccounts(path) {
   return map;
 }
 
-const accounts = loadAccounts(csvPath);
+const accounts = loadAccounts(csvPath, csvEnvData);
 
 function resolveCredentials(accountName) {
   if (accountName) {
@@ -295,7 +307,7 @@ function listAccounts() {
     env,
   }));
   return {
-    source: existsSync(csvPath) ? csvPath : null,
+    source: csvEnvData ? "ESPM_ACCOUNTS_CSV_DATA" : existsSync(csvPath) ? csvPath : null,
     accounts: configured,
   };
 }

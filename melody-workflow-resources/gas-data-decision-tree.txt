@@ -1,0 +1,12 @@
+Check: Do we have access to the meter consumption data?
+├── YES
+│   └── Check: Is there a gas meter?
+│       ├── YES
+│       │   └── Check: Is there data for this meter?
+│       │       ├── YES → Gas data check passes ✅
+│       │       └── NO → INFORMATION: gas meter with no data ℹ️
+│       └── NO → INFORMATION: no gas meter ℹ️
+└── NO
+    └── Check: Is the property shared with FortisBC?
+        ├── YES → Gas data check passes (based on sharing, not meter presence) ✅
+        └── NO → INFORMATION: property has no gas data ℹ️

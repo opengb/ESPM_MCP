@@ -136,6 +136,16 @@ If an aggregated meter IS expected, check the meters list for one that has aggre
 
 If an aggregated meter is NOT expected, the property data looks good.`;
 
+// ─── BC Hydro Sharing Check ──────────────────────────────────────────────────
+
+// TODO: Check whether this specific property has been shared with BC Hydro.
+// The ESPM API has no endpoint for property-level sharing. This will require
+// scraping the ESPM web UI property summary page to read the "Sharing this
+// Property" table. For now, we always return false.
+function checkBcHydroSharing(/* propertyId, deps */) {
+  return { shared: false, customerName: null };
+}
+
 // ─── Main Workflow ───────────────────────────────────────────────────────────
 
 async function suspiciousDataCheck(propertyId, accountName, deps, { customId } = {}) {
@@ -262,13 +272,11 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
   if (!hasMeterAccess) {
     steps[steps.length - 1].nextAction = "No meter access → checking if property is shared with BC Hydro";
 
-    // TODO: Check whether this specific property has been shared with BC Hydro.
-    // The ESPM API has no endpoint for property-level sharing. This will require
-    // scraping the ESPM web UI property summary page to read the "Sharing this
-    // Property" table. For now, we always return false.
     steps.push({ check: "Check if property is shared with BC Hydro", status: "done" });
-    const bcHydroShared = false;
-    steps[steps.length - 1].result = "Unable to verify (property-level sharing check not yet implemented)";
+    const { shared: bcHydroShared } = checkBcHydroSharing();
+    steps[steps.length - 1].result = bcHydroShared
+      ? "Shared with BC Hydro"
+      : "Not shared with BC Hydro";
 
     if (!bcHydroShared) {
       return {
@@ -288,12 +296,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
   // ─── BRANCH B: Have meter access ───
   steps[steps.length - 1].nextAction = "Have meter access → checking data source on each meter";
 
-  // TODO: Check whether this specific property has been shared with BC Hydro.
-  // The ESPM API has no endpoint for property-level sharing. This will require
-  // scraping the ESPM web UI property summary page to read the "Sharing this
-  // Property" table. For now, we always return false.
-  const bcHydroConnected = false;
-  const bcHydroCustomerName = null;
+  const { shared: bcHydroConnected, customerName: bcHydroCustomerName } = checkBcHydroSharing();
 
   // STEP B1: Check meter data source
   steps.push({ check: "Check meter data source (BC Hydro vs manual)", status: "running" });
@@ -342,6 +345,12 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
       aggregateMeter: m.aggregateMeter,
     }));
 
+    // Shared with BC Hydro check
+    steps.push({ check: "Shared with BC Hydro", status: "done" });
+    steps[steps.length - 1].result = bcHydroConnected
+      ? `Yes ("${bcHydroCustomerName}")`
+      : "Not shared with BC Hydro";
+
     if (!bcHydroConnected) {
       return {
         propertyId,
@@ -354,7 +363,7 @@ async function suspiciousDataCheck(propertyId, accountName, deps, { customId } =
         ...gfaResult,
         outcome: "suspicious",
         message:
-          "The property has not been shared with BC Hydro. We cannot read the meter data. The building owner should be contacted.",
+          "Data could not be verified — property not shared with BC Hydro, and we don't have access to the meters. The building owner should be contacted.",
       };
     }
 
@@ -475,23 +484,22 @@ IMPORTANT: Always present suspicious data check results in this compact format. 
 [propertyName], [address]
 [propertyType] | Account: [account]
 
-Then print a bulleted list with ONE bullet per check that was actually traversed. Each check MUST be its own bullet — never combine checks. Be concise.
+Then print a bulleted list with ONE bullet per check that was actually traversed. Each check MUST be on its own line — NEVER combine two checks into one bullet. Be concise — one short sentence per bullet.
 
 - GFA check: [✅/⚠️/skipped] [short result] (only for CRD properties)
 - Meter access: [✅/⚠️] [short result]
+- Shared with BC Hydro: [✅/⚠️] [short result] (when meter access is denied or consumption data is unreadable)
 - BC Hydro data source: [✅/⚠️] [short result]
 - Aggregated meter needed: [✅/⚠️] [short result]
 - Aggregated meter found: [✅/⚠️] [short result]
 
-Only show bullets for checks that were actually traversed — omit skipped checks. Keep each bullet to one short sentence.
+Only show bullets for checks that were actually traversed — omit skipped checks. NEVER merge two checks into a single bullet point.
 
 End with:
 
 Verdict: ✅ Property data looks good.
 — or —
 Verdict: ⚠️ [short reason]. The property owner should be contacted.
-— or —
-Verdict: ❌ [error message]
 
 If outcome is "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
 ${EMAIL_TEMPLATE_INSTRUCTIONS}`;
@@ -517,7 +525,7 @@ Then for EACH property, print a block with a bulleted list of checks. Each check
 - Aggregated meter needed: [✅/⚠️] [short result]
 - Aggregated meter found: [✅/⚠️] [short result]
 
-Verdict: [✅/⚠️/❌] [short verdict]
+Verdict: [✅/⚠️] [short verdict]
 
 Only show bullets for checks that were actually traversed — omit checks that were skipped. Keep each bullet to one short sentence. For "requires_aggregation_judgment", decide ✅ or ⚠️ and add one brief reason.
 

@@ -156,10 +156,11 @@ npm run start:http
 
 Or directly: `node src/main.js http`
 
-Env vars (both optional, see `env.example`):
+Env vars (all optional, see `env.example`):
 
 - `MCP_HTTP_PORT` — port to listen on (default `3000`)
 - `MCP_HTTP_HOST` — interface to bind (default `127.0.0.1`)
+- `MCP_HTTP_BASIC_AUTH_USER` / `MCP_HTTP_BASIC_AUTH_PASS` — enable HTTP Basic auth on `/mcp` (must be set together; see "Enable HTTP Basic auth" below)
 
 The endpoint is `POST /mcp`. The server runs **stateless** — no session IDs,
 one request/response per call — which keeps things simple and works for every
@@ -176,6 +177,32 @@ curl -sS -X POST http://127.0.0.1:3000/mcp \
 
 You should get back the list of all ESPM tools.
 
+### Enable HTTP Basic auth
+
+The `/mcp` endpoint is unauthed by default. To require HTTP Basic auth, set
+both `MCP_HTTP_BASIC_AUTH_USER` and `MCP_HTTP_BASIC_AUTH_PASS` before starting
+the server. They can be exported, passed inline, or put in `.env`
+(see `env.example`). Setting only one of them fails fast at startup.
+
+```bash
+MCP_HTTP_BASIC_AUTH_USER=alice MCP_HTTP_BASIC_AUTH_PASS=secret npm run start:http
+# ESPM MCP HTTP server listening on http://127.0.0.1:3000/mcp (Basic auth enabled)
+```
+
+Hit the protected endpoint with `curl -u`:
+
+```bash
+curl -sS -u alice:secret -X POST http://127.0.0.1:3000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Missing or wrong credentials return `401` with a
+`WWW-Authenticate: Basic realm="ESPM MCP"` challenge. Basic auth is cleartext
+over HTTP, so if you're exposing the server beyond localhost put it behind a
+reverse proxy that terminates TLS.
+
 ### Connect Claude Code to the HTTP server
 
 With the HTTP server running, register it with Claude Code using the `http`
@@ -185,17 +212,25 @@ transport:
 claude mcp add --transport http espm http://127.0.0.1:3000/mcp
 ```
 
+If you enabled Basic auth, pass the credentials as a header:
+
+```bash
+claude mcp add --transport http espm http://127.0.0.1:3000/mcp \
+  --header "Authorization: Basic $(printf '%s:%s' alice secret | base64)"
+```
+
 Add `-s user` or `-s project` to change the scope. Verify with
-`claude mcp list`. If you're pointing at a remote/proxied endpoint that
-requires auth, pass headers with `--header "Authorization: Bearer <token>"`.
+`claude mcp list`.
 
 ### Security
 
-There is **no built-in auth** on the HTTP endpoint. By default it binds to
+There is **no built-in auth unless you opt in** via `MCP_HTTP_BASIC_AUTH_USER`
+/ `MCP_HTTP_BASIC_AUTH_PASS` (see above). By default the server binds to
 `127.0.0.1`, so only processes on the same machine can reach it. If you want
-to expose it more broadly, put it behind a reverse proxy (nginx, Caddy,
-Cloudflare Tunnel, etc.) that handles TLS and authentication for you. Don't
-bind to a public interface without one.
+to expose it more broadly, enable Basic auth **and** put it behind a reverse
+proxy (nginx, Caddy, Cloudflare Tunnel, etc.) that terminates TLS — Basic auth
+alone is cleartext and offers no protection in transit. Don't bind to a public
+interface without a proxy.
 
 Credentials still come from `accounts.csv` the same way they do in stdio mode.
 
@@ -213,10 +248,11 @@ docker run --rm -p 3000:3000 \
 The container binds to `0.0.0.0:3000` inside the container (published on the
 host via `-p`). `accounts.csv` is mounted read-only so credentials aren't baked
 into the image. Override port/host with `-e MCP_HTTP_PORT=...` /
-`-e MCP_HTTP_HOST=...` if needed.
+`-e MCP_HTTP_HOST=...`, and enable Basic auth with
+`-e MCP_HTTP_BASIC_AUTH_USER=... -e MCP_HTTP_BASIC_AUTH_PASS=...` if needed.
 
-The same security caveat applies: there's no built-in auth, so don't publish
-the port to a public interface without a reverse proxy in front.
+Basic auth alone is cleartext, so don't publish the port to a public interface
+without a reverse proxy terminating TLS in front.
 
 ---
 

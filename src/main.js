@@ -30,7 +30,16 @@ if (transport === "stdio") {
   const { createHttpTransport } = await import("./transports/http.js");
   const port = Number(flag("port", process.env.MCP_HTTP_PORT ?? "3000"));
   const host = flag("host", process.env.MCP_HTTP_HOST ?? "127.0.0.1");
-  await createHttpTransport({ port, host });
+  const authUser = process.env.MCP_HTTP_BASIC_AUTH_USER;
+  const authPass = process.env.MCP_HTTP_BASIC_AUTH_PASS;
+  if ((authUser && !authPass) || (!authUser && authPass)) {
+    console.error(
+      "MCP_HTTP_BASIC_AUTH_USER and MCP_HTTP_BASIC_AUTH_PASS must both be set to enable Basic auth, or both left unset to disable it."
+    );
+    process.exit(1);
+  }
+  const basicAuth = authUser && authPass ? { user: authUser, pass: authPass } : null;
+  await createHttpTransport({ port, host, basicAuth });
 } else {
   console.error(`Unknown transport "${transport}". Choose: stdio, http`);
   process.exit(1);

@@ -464,8 +464,38 @@ export function getTools(ACCOUNT_NAME_PROP) {
     },
     {
       name: "suspicious_data_check",
-      description:
-        "Investigate whether a property's energy data looks legitimate or suspicious. Runs a step-by-step decision tree: checks meter access, data source (BC Hydro Web Services vs manual entry), and whether an aggregated meter is present when expected. Accepts a single property_id or an array of property_ids for batch checks. IMPORTANT: If the user uploads or provides a CSV or Excel file, you MUST read the file contents, extract the value from the 'pm-property-id' column for every row, and pass all of them as the property_ids array parameter. Do NOT pass a file path — this tool cannot read files directly.",
+      description: `Investigate whether a property's energy data looks legitimate or suspicious.
+
+HOW IT WORKS:
+This tool runs a decision tree of checks on each property to determine if its energy data is trustworthy:
+
+1. Meter access — Can we see the property's meters in ESPM?
+2. Data source — Was the meter data populated by BC Hydro Web Services, or manually entered?
+3. Aggregated meter — For property types with many units (e.g. multifamily, strata), is there an aggregated electricity meter from BC Hydro?
+
+The decision tree:
+  Meter access?
+  ├── YES → Data from BC Hydro?
+  │   ├── YES → Aggregated meter needed?
+  │   │   ├── YES → Aggregated meter found?
+  │   │   │   ├── YES → ✅ Looks good
+  │   │   │   └── NO → ⚠️ Contact owner
+  │   │   └── NO → ✅ Looks good
+  │   └── NO → ⚠️ Manually entered data, contact owner
+  └── NO → Shared with BC Hydro?
+      ├── YES → Aggregated meter needed?
+      │   ├── YES → ⚠️ Contact owner
+      │   └── NO → ✅ Looks good
+      └── NO → ⚠️ Contact owner
+
+USAGE:
+- Single property: provide property_id (e.g. "88547924")
+- Batch check: provide property_ids array (e.g. ["88547924", "9976853"])
+- From a file: upload a CSV or Excel file with a "pm-property-id" column
+
+When flagged ⚠️, a draft email to the building owner is generated.
+
+IMPORTANT: If the user uploads or provides a CSV or Excel file, you MUST read the file contents, extract the value from the 'pm-property-id' column for every row, and pass all of them as the property_ids array parameter. Do NOT pass a file path — this tool cannot read files directly.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -478,7 +508,6 @@ export function getTools(ACCOUNT_NAME_PROP) {
             items: { type: "string" },
             description: "An array of ESPM property IDs to check in batch. Use this when the user uploads a file — extract the pm-property-id values and pass them here.",
           },
-          ...ACCOUNT_NAME_PROP,
         },
       },
     },

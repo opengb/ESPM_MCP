@@ -17,6 +17,11 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createRemoteJWKSet, jwtVerify, errors as joseErrors } from "jose";
 import { createEspmServer } from "../server.js";
 
+function log(...args) {
+  console.error(...args);
+  console.log(...args);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -93,7 +98,7 @@ async function verifyJwt(req, config, jwks) {
     }));
   } catch (err) {
     if (err instanceof joseErrors.JWKSTimeout || err instanceof joseErrors.JWKSInvalid) {
-      console.error("ESPM MCP JWKS unavailable:", err);
+      log("ESPM MCP JWKS unavailable:", err);
       return {
         ok: false,
         status: 503,
@@ -107,7 +112,7 @@ async function verifyJwt(req, config, jwks) {
         challenge: bearerChallenge({ error: "invalid_token", description: err.message }),
       };
     }
-    console.error("ESPM MCP JWT verification failed:", err);
+    log("ESPM MCP JWT verification failed:", err);
     return {
       ok: false,
       status: 503,
@@ -214,7 +219,7 @@ export function createHttpTransport({
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     } catch (err) {
-      console.error("ESPM MCP HTTP request failed:", err);
+      log("ESPM MCP HTTP request failed:", err);
       if (!res.headersSent) {
         writeJsonRpcError(res, 500, -32603, "Internal error");
       }
@@ -229,7 +234,7 @@ export function createHttpTransport({
         : oauth
           ? " (OAuth enabled)"
           : "";
-      console.error(`ESPM MCP HTTP server listening on http://${host}:${port}/mcp${authNote}`);
+      log(`ESPM MCP HTTP server listening on http://${host}:${port}/mcp${authNote}`);
       resolve(httpServer);
     });
   });

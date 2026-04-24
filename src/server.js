@@ -1,13 +1,12 @@
-#!/usr/bin/env node
-
 /**
- * ESPM MCP Server
- * Connects Claude to Energy Star Portfolio Manager
- * https://github.com/nikmirando1/ESPM_MCP
+ * ESPM MCP Server — shared setup.
+ *
+ * Both entry points (transports/stdio.js and transports/http.js) import
+ * `createEspmServer` from here. All tool definitions, handlers, and ESPM
+ * client code live in this module.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -551,11 +550,6 @@ async function getGroupScoreSummary(groupId, accountName) {
 
 // ─── MCP Server ──────────────────────────────────────────────────────────────
 
-const server = new Server(
-  { name: "espm-mcp", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
-
 const ACCOUNT_NAME_PROP = {
   account_name: {
     type: "string",
@@ -564,187 +558,191 @@ const ACCOUNT_NAME_PROP = {
   },
 };
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "list_accounts",
-      description:
-        "List the ESPM accounts configured in accounts.csv (usernames + env). Use the returned names as the account_name parameter on other tools. Does not hit the ESPM API.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "get_account",
-      description:
-        "Get your ESPM account info — name, organization, and which environment you're connected to (test vs live).",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "list_properties",
-      description:
-        "List all property IDs in your ESPM account. Use this to discover what properties you have, then call get_property for details.",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "get_property",
-      description:
-        "Get details for a specific property by ID: name, address, gross floor area, primary function, year built.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          property_id: {
-            type: "string",
-            description: "The ESPM property ID",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["property_id"],
-      },
-    },
-    {
-      name: "get_property_metrics",
-      description:
-        "Get energy metrics for a specific property: ENERGY STAR score, site EUI, source EUI, GHG emissions. Defaults to the most recent full year.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          property_id: {
-            type: "string",
-            description: "The ESPM property ID",
-          },
-          year: {
-            type: "number",
-            description: "Year to retrieve metrics for (defaults to last full year)",
-          },
-          month: {
-            type: "number",
-            description: "Month to retrieve metrics for (defaults to 12)",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["property_id"],
-      },
-    },
-    {
-      name: "list_property_groups",
-      description:
-        "List all property groups in your account (e.g. by fund, asset type, or management style). Returns group IDs you can use with other tools.",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "get_property_group",
-      description: "Get the name and details of a specific property group by ID.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group_id: {
-            type: "string",
-            description: "The ESPM property group ID",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["group_id"],
-      },
-    },
-    {
-      name: "get_group_score_summary",
-      description:
-        "Get a full score summary for a property group — average ENERGY STAR score, min/max, and per-property breakdown. Perfect for questions like 'what is the average score for my office properties?'",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group_id: {
-            type: "string",
-            description: "The ESPM property group ID",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["group_id"],
-      },
-    },
-    {
-      name: "get_portfolio_summary",
-      description:
-        "Get a high-level summary of your entire portfolio — scores, EUI, and property details across all properties (samples up to 50). Good for 'what does my portfolio look like overall?' questions.",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "get_energy_star_certification_summary",
-      description:
-        "Count which properties were actually ENERGY STAR certified in a specific year, using ESPM certification metrics rather than score alone.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          year: {
-            type: "number",
-            description: "Calendar year to check for ENERGY STAR certification, such as 2025.",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["year"],
-      },
-    },
-  ],
-}));
+export function createEspmServer() {
+  const server = new Server(
+    { name: "espm-mcp", version: "1.1.0" },
+    { capabilities: { tools: {} } }
+  );
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "list_accounts",
+        description:
+          "List the ESPM accounts configured in accounts.csv (usernames + env). Use the returned names as the account_name parameter on other tools. Does not hit the ESPM API.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "get_account",
+        description:
+          "Get your ESPM account info — name, organization, and which environment you're connected to (test vs live).",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
+      },
+      {
+        name: "list_properties",
+        description:
+          "List all property IDs in your ESPM account. Use this to discover what properties you have, then call get_property for details.",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
+      },
+      {
+        name: "get_property",
+        description:
+          "Get details for a specific property by ID: name, address, gross floor area, primary function, year built.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: {
+              type: "string",
+              description: "The ESPM property ID",
+            },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["property_id"],
+        },
+      },
+      {
+        name: "get_property_metrics",
+        description:
+          "Get energy metrics for a specific property: ENERGY STAR score, site EUI, source EUI, GHG emissions. Defaults to the most recent full year.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: {
+              type: "string",
+              description: "The ESPM property ID",
+            },
+            year: {
+              type: "number",
+              description: "Year to retrieve metrics for (defaults to last full year)",
+            },
+            month: {
+              type: "number",
+              description: "Month to retrieve metrics for (defaults to 12)",
+            },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["property_id"],
+        },
+      },
+      {
+        name: "list_property_groups",
+        description:
+          "List all property groups in your account (e.g. by fund, asset type, or management style). Returns group IDs you can use with other tools.",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
+      },
+      {
+        name: "get_property_group",
+        description: "Get the name and details of a specific property group by ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            group_id: {
+              type: "string",
+              description: "The ESPM property group ID",
+            },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["group_id"],
+        },
+      },
+      {
+        name: "get_group_score_summary",
+        description:
+          "Get a full score summary for a property group — average ENERGY STAR score, min/max, and per-property breakdown. Perfect for questions like 'what is the average score for my office properties?'",
+        inputSchema: {
+          type: "object",
+          properties: {
+            group_id: {
+              type: "string",
+              description: "The ESPM property group ID",
+            },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["group_id"],
+        },
+      },
+      {
+        name: "get_portfolio_summary",
+        description:
+          "Get a high-level summary of your entire portfolio — scores, EUI, and property details across all properties (samples up to 50). Good for 'what does my portfolio look like overall?' questions.",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
+      },
+      {
+        name: "get_energy_star_certification_summary",
+        description:
+          "Count which properties were actually ENERGY STAR certified in a specific year, using ESPM certification metrics rather than score alone.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            year: {
+              type: "number",
+              description: "Calendar year to check for ENERGY STAR certification, such as 2025.",
+            },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["year"],
+        },
+      },
+    ],
+  }));
 
-  try {
-    let result;
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
 
-    switch (name) {
-      case "list_accounts":
-        result = listAccounts();
-        break;
-      case "get_account":
-        result = await getAccount(args.account_name);
-        break;
-      case "list_properties":
-        result = await listProperties(args.account_name);
-        break;
-      case "get_property":
-        result = await getProperty(args.property_id, args.account_name);
-        break;
-      case "get_property_metrics":
-        result = await getPropertyMetrics(
-          args.property_id,
-          args.year,
-          args.month,
-          null,
-          args.account_name
-        );
-        break;
-      case "list_property_groups":
-        result = await listPropertyGroups(args.account_name);
-        break;
-      case "get_property_group":
-        result = await getPropertyGroup(args.group_id, args.account_name);
-        break;
-      case "get_group_score_summary":
-        result = await getGroupScoreSummary(args.group_id, args.account_name);
-        break;
-      case "get_portfolio_summary":
-        result = await getPortfolioSummary(args.account_name);
-        break;
-      case "get_energy_star_certification_summary":
-        result = await getEnergyStarCertificationSummary(args.year, args.account_name);
-        break;
-      default:
-        throw new Error(`Unknown tool: ${name}`);
+    try {
+      let result;
+
+      switch (name) {
+        case "list_accounts":
+          result = listAccounts();
+          break;
+        case "get_account":
+          result = await getAccount(args.account_name);
+          break;
+        case "list_properties":
+          result = await listProperties(args.account_name);
+          break;
+        case "get_property":
+          result = await getProperty(args.property_id, args.account_name);
+          break;
+        case "get_property_metrics":
+          result = await getPropertyMetrics(
+            args.property_id,
+            args.year,
+            args.month,
+            null,
+            args.account_name
+          );
+          break;
+        case "list_property_groups":
+          result = await listPropertyGroups(args.account_name);
+          break;
+        case "get_property_group":
+          result = await getPropertyGroup(args.group_id, args.account_name);
+          break;
+        case "get_group_score_summary":
+          result = await getGroupScoreSummary(args.group_id, args.account_name);
+          break;
+        case "get_portfolio_summary":
+          result = await getPortfolioSummary(args.account_name);
+          break;
+        case "get_energy_star_certification_summary":
+          result = await getEnergyStarCertificationSummary(args.year, args.account_name);
+          break;
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error: ${error.message}` }],
+        isError: true,
+      };
     }
+  });
 
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  } catch (error) {
-    return {
-      content: [{ type: "text", text: `Error: ${error.message}` }],
-      isError: true,
-    };
-  }
-});
-
-// ─── Start ───────────────────────────────────────────────────────────────────
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
+  return server;
+}

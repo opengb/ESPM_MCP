@@ -113,7 +113,7 @@ Add this entry (update the path to where you cloned the repo):
     "espm": {
       "type": "stdio",
       "command": "node",
-      "args": ["/absolute/path/to/ESPM_MCP/src/index.js"]
+      "args": ["/absolute/path/to/ESPM_MCP/src/main.js"]
     }
   }
 }
@@ -122,6 +122,53 @@ Add this entry (update the path to where you cloned the repo):
 ### Step 5 — Restart Claude Desktop and start asking
 
 Restart Claude Desktop. You'll see the ESPM tools available. Start asking questions about your portfolio.
+
+---
+
+## Running as an HTTP MCP server
+
+The server also speaks the MCP **Streamable HTTP** transport, so you can run it
+as a long-lived process and point any HTTP-capable MCP client (hosted Claude,
+custom clients, etc.) at it instead of spawning a stdio subprocess.
+
+### Start it
+
+```bash
+npm run start:http
+# ESPM MCP HTTP server listening on http://127.0.0.1:3000/mcp
+```
+
+Or directly: `node src/main.js http`
+
+Env vars (both optional, see `env.example`):
+
+- `MCP_HTTP_PORT` — port to listen on (default `3000`)
+- `MCP_HTTP_HOST` — interface to bind (default `127.0.0.1`)
+
+The endpoint is `POST /mcp`. The server runs **stateless** — no session IDs,
+one request/response per call — which keeps things simple and works for every
+ESPM tool this server exposes.
+
+### Smoke-test with curl
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+You should get back the list of all ESPM tools.
+
+### Security
+
+There is **no built-in auth** on the HTTP endpoint. By default it binds to
+`127.0.0.1`, so only processes on the same machine can reach it. If you want
+to expose it more broadly, put it behind a reverse proxy (nginx, Caddy,
+Cloudflare Tunnel, etc.) that handles TLS and authentication for you. Don't
+bind to a public interface without one.
+
+Credentials still come from `accounts.csv` the same way they do in stdio mode.
 
 ---
 

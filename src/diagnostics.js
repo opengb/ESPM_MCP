@@ -782,7 +782,7 @@ export function setupDiagnostics({ espmGet, arrayify, safeNum, extractText, extr
       propertyName: qualityCheck.propertyName,
       primaryFunction: qualityCheck.primaryFunction,
       grossFloorArea: qualityCheck.grossFloorArea,
-      year: faultyCheck.year,
+      yearsScanned: faultyCheck.yearsScanned,
       siteEUI: qualityCheck.siteEUI,
       canadianMedianSiteEUI: qualityCheck.canadianMedianSiteEUI,
       overallStatus,

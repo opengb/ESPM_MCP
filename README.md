@@ -161,6 +161,7 @@ Env vars (all optional, see `env.example`):
 - `MCP_HTTP_PORT` — port to listen on (default `3000`)
 - `MCP_HTTP_HOST` — interface to bind (default `127.0.0.1`)
 - `MCP_HTTP_BASIC_AUTH_USER` / `MCP_HTTP_BASIC_AUTH_PASS` — enable HTTP Basic auth on `/mcp` (must be set together; see "Enable HTTP Basic auth" below)
+- `MCP_HTTP_OAUTH_INTROSPECTION_URL` / `MCP_HTTP_OAUTH_CLIENT_ID` / `MCP_HTTP_OAUTH_CLIENT_SECRET` — enable OAuth 2.0 Bearer auth on `/mcp` via RFC 7662 introspection (see "Enable OAuth" below). Mutually exclusive with Basic auth.
 
 The endpoint is `POST /mcp`. The server runs **stateless** — no session IDs,
 one request/response per call — which keeps things simple and works for every
@@ -202,6 +203,59 @@ Missing or wrong credentials return `401` with a
 `WWW-Authenticate: Basic realm="ESPM MCP"` challenge. Basic auth is cleartext
 over HTTP, so if you're exposing the server beyond localhost put it behind a
 reverse proxy that terminates TLS.
+
+### Enable OAuth
+
+Instead of Basic auth, the `/mcp` endpoint can require OAuth 2.0 Bearer
+tokens validated against your identity provider via
+[RFC 7662 token introspection](https://www.rfc-editor.org/rfc/rfc7662). On each
+request the server posts the submitted access token to the introspection
+endpoint (authenticated with its own client credentials) and accepts the
+request only if the response says `active: true`.
+
+Set the introspection URL plus the client credentials this server uses to
+authenticate to it:
+
+```bash
+MCP_HTTP_OAUTH_INTROSPECTION_URL=https://idp.example.com/oauth2/introspect \
+MCP_HTTP_OAUTH_CLIENT_ID=espm-mcp \
+MCP_HTTP_OAUTH_CLIENT_SECRET=secret \
+npm run start:http
+# ESPM MCP HTTP server listening on http://127.0.0.1:3000/mcp (OAuth enabled)
+```
+
+Optionally enforce scope and/or audience against the introspection response:
+
+- `MCP_HTTP_OAUTH_REQUIRED_SCOPE` — token's `scope` string must contain this value
+- `MCP_HTTP_OAUTH_REQUIRED_AUDIENCE` — token's `aud` claim must contain this value
+
+Hit the protected endpoint with a Bearer token:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/mcp \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Failures return a `WWW-Authenticate: Bearer ...` challenge per
+[RFC 6750](https://www.rfc-editor.org/rfc/rfc6750): `invalid_request` (missing
+or malformed Authorization header), `invalid_token` (token not active or
+audience mismatch), `insufficient_scope` (required scope missing), or
+`temporarily_unavailable` (`503`) when the introspection endpoint itself is
+unreachable.
+
+OAuth and Basic auth are mutually exclusive — configuring both fails at
+startup. The server still accepts cleartext HTTP, so terminate TLS at a
+reverse proxy in front of it when exposing the endpoint beyond localhost.
+
+Register it with Claude Code using the `http` transport and a Bearer header:
+
+```bash
+claude mcp add --transport http espm http://127.0.0.1:3000/mcp \
+  --header "Authorization: Bearer $ACCESS_TOKEN"
+```
 
 ### Connect Claude Code to the HTTP server
 

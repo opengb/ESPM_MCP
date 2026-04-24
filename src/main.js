@@ -39,7 +39,42 @@ if (transport === "stdio") {
     process.exit(1);
   }
   const basicAuth = authUser && authPass ? { user: authUser, pass: authPass } : null;
-  await createHttpTransport({ port, host, basicAuth });
+
+  const oauthIntrospectionUrl = process.env.MCP_HTTP_OAUTH_INTROSPECTION_URL;
+  const oauthClientId = process.env.MCP_HTTP_OAUTH_CLIENT_ID;
+  const oauthClientSecret = process.env.MCP_HTTP_OAUTH_CLIENT_SECRET;
+  const oauthRequiredScope = process.env.MCP_HTTP_OAUTH_REQUIRED_SCOPE;
+  const oauthRequiredAudience = process.env.MCP_HTTP_OAUTH_REQUIRED_AUDIENCE;
+  if (oauthIntrospectionUrl && (!oauthClientId || !oauthClientSecret)) {
+    console.error(
+      "MCP_HTTP_OAUTH_INTROSPECTION_URL requires MCP_HTTP_OAUTH_CLIENT_ID and MCP_HTTP_OAUTH_CLIENT_SECRET to authenticate to the introspection endpoint."
+    );
+    process.exit(1);
+  }
+  if (!oauthIntrospectionUrl && (oauthClientId || oauthClientSecret || oauthRequiredScope || oauthRequiredAudience)) {
+    console.error(
+      "MCP_HTTP_OAUTH_* options require MCP_HTTP_OAUTH_INTROSPECTION_URL to be set."
+    );
+    process.exit(1);
+  }
+  const oauth = oauthIntrospectionUrl
+    ? {
+        introspectionUrl: oauthIntrospectionUrl,
+        clientId: oauthClientId,
+        clientSecret: oauthClientSecret,
+        requiredScope: oauthRequiredScope,
+        requiredAudience: oauthRequiredAudience,
+      }
+    : null;
+
+  if (basicAuth && oauth) {
+    console.error(
+      "HTTP Basic auth and OAuth cannot both be enabled. Configure either MCP_HTTP_BASIC_AUTH_* or MCP_HTTP_OAUTH_*, not both."
+    );
+    process.exit(1);
+  }
+
+  await createHttpTransport({ port, host, basicAuth, oauth });
 } else {
   console.error(`Unknown transport "${transport}". Choose: stdio, http`);
   process.exit(1);

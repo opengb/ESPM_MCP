@@ -16,6 +16,7 @@ import { getTools as getSuspiciousDataTools, handleTool as handleSuspiciousDataT
 import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { setupDiagnostics } from "./diagnostics.js";
 
 // Load .env manually (lightweight, no external dep needed beyond dotenv)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -465,6 +466,9 @@ async function getEnergyStarCertificationSummary(year, accountName) {
   };
 }
 
+const { getMeterConsumption, checkAggregatedMeters, runDataQualityCheck } =
+  setupDiagnostics({ espmGet, arrayify, safeNum, extractText, extractLinkId, getProperty, getPropertyMetrics });
+
 async function getPortfolioSummary(accountName) {
   // Get all properties and pull metrics for each — builds a portfolio-level view
   const props = await listProperties(accountName);
@@ -668,6 +672,46 @@ export function createEspmServer() {
           "Get a high-level summary of your entire portfolio — scores, EUI, and property details across all properties (samples up to 50). Good for 'what does my portfolio look like overall?' questions.",
         inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
       },
+      {
+        name: "run_data_quality_check",
+        description:
+          "Run a full data quality diagnostic on a property before a VAM run. Checks for aggregated meters, missing electricity/gas meters, solar net metering, suspiciously low EUI (partial coverage), and manual data entry. Returns a structured report with a vamReadiness assessment.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: { type: "string", description: "The ESPM property ID" },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["property_id"],
+        },
+      },
+      {
+        name: "get_meter_consumption",
+        description:
+          "Get monthly consumption data for a specific meter, with stats on billing regularity, seasonal variation, and profile shape. Use this after run_data_quality_check to diagnose whether a gas meter has irregular billing (needs HDD smoothing), a flat/baseload-only profile (DHW, not space heating), or data gaps. Requires a meter ID from the meter list.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            meter_id: { type: "string", description: "The ESPM meter ID" },
+            year: { type: "number", description: "Year to fetch consumption data for (defaults to last full year)" },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["meter_id"],
+        },
+      },
+      {
+        name: "check_aggregated_meters",
+        description:
+          "Check if a property has any meters whose names look like aggregated meters (e.g. 'Whole Building', 'Building Total', 'Aggregate'). Returns the full meter list and flags suspected aggregated meters.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: { type: "string", description: "The ESPM property ID" },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["property_id"],
+        },
+      },
       ...getSuspiciousDataTools(ACCOUNT_NAME_PROP),
       {
         name: "get_energy_star_certification_summary",
@@ -727,6 +771,15 @@ export function createEspmServer() {
           break;
         case "get_portfolio_summary":
           result = await getPortfolioSummary(args.account_name);
+          break;
+        case "run_data_quality_check":
+          result = await runDataQualityCheck(args.property_id, args.account_name);
+          break;
+        case "get_meter_consumption":
+          result = await getMeterConsumption(args.meter_id, args.year, args.account_name);
+          break;
+        case "check_aggregated_meters":
+          result = await checkAggregatedMeters(args.property_id, args.account_name);
           break;
         case "get_energy_star_certification_summary":
           result = await getEnergyStarCertificationSummary(args.year, args.account_name);

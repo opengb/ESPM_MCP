@@ -569,180 +569,168 @@ export function createEspmServer() {
     { capabilities: { tools: {} } }
   );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "list_accounts",
-      description:
-        "List the ESPM accounts configured in accounts.csv (usernames + env). Use the returned names as the account_name parameter on other tools. Does not hit the ESPM API.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "get_account",
-      description:
-        "Get your ESPM account info — name, organization, and which environment you're connected to (test vs live).",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "list_properties",
-      description:
-        "List all property IDs in your ESPM account. Use this to discover what properties you have, then call get_property for details.",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "get_property",
-      description:
-        "Get details for a specific property by ID: name, address, gross floor area, primary function, year built.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          property_id: {
-            type: "string",
-            description: "The ESPM property ID",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["property_id"],
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "list_accounts",
+        description:
+          "List the ESPM accounts configured in accounts.csv (usernames + env). Use the returned names as the account_name parameter on other tools. Does not hit the ESPM API.",
+        inputSchema: { type: "object", properties: {} },
       },
-    },
-    {
-      name: "get_property_metrics",
-      description:
-        "Get energy metrics for a specific property: ENERGY STAR score, site EUI, source EUI, GHG emissions. Defaults to the most recent full year.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          property_id: {
-            type: "string",
-            description: "The ESPM property ID",
-          },
-          year: {
-            type: "number",
-            description: "Year to retrieve metrics for (defaults to last full year)",
-          },
-          month: {
-            type: "number",
-            description: "Month to retrieve metrics for (defaults to 12)",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["property_id"],
+      {
+        name: "get_account",
+        description:
+          "Get your ESPM account info — name, organization, and which environment you're connected to (test vs live).",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
       },
-    },
-    {
-      name: "list_property_groups",
-      description:
-        "List all property groups in your account (e.g. by fund, asset type, or management style). Returns group IDs you can use with other tools.",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "get_property_group",
-      description: "Get the name and details of a specific property group by ID.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group_id: {
-            type: "string",
-            description: "The ESPM property group ID",
-          },
-          ...ACCOUNT_NAME_PROP,
-        },
-        required: ["group_id"],
+      {
+        name: "list_properties",
+        description:
+          "List all property IDs in your ESPM account. Use this to discover what properties you have, then call get_property for details.",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
       },
-    },
-    {
-      name: "get_group_score_summary",
-      description:
-        "Get a full score summary for a property group — average ENERGY STAR score, min/max, and per-property breakdown. Perfect for questions like 'what is the average score for my office properties?'",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group_id: {
-            type: "string",
-            description: "The ESPM property group ID",
+      {
+        name: "get_property",
+        description:
+          "Get details for a specific property by ID: name, address, gross floor area, primary function, year built.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: {
+              type: "string",
+              description: "The ESPM property ID",
+            },
+            ...ACCOUNT_NAME_PROP,
           },
-          ...ACCOUNT_NAME_PROP,
+          required: ["property_id"],
         },
-        required: ["group_id"],
       },
-    },
-    {
-      name: "get_portfolio_summary",
-      description:
-        "Get a high-level summary of your entire portfolio — scores, EUI, and property details across all properties (samples up to 50). Good for 'what does my portfolio look like overall?' questions.",
-      inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
-    },
-    {
-      name: "get_energy_star_certification_summary",
-      description:
-        "Count which properties were actually ENERGY STAR certified in a specific year, using ESPM certification metrics rather than score alone.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          year: {
-            type: "number",
-            description: "Calendar year to check for ENERGY STAR certification, such as 2025.",
+      {
+        name: "get_property_metrics",
+        description:
+          "Get energy metrics for a specific property: ENERGY STAR score, site EUI, source EUI, GHG emissions. Defaults to the most recent full year.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: {
+              type: "string",
+              description: "The ESPM property ID",
+            },
+            year: {
+              type: "number",
+              description: "Year to retrieve metrics for (defaults to last full year)",
+            },
+            month: {
+              type: "number",
+              description: "Month to retrieve metrics for (defaults to 12)",
+            },
+            ...ACCOUNT_NAME_PROP,
           },
-          ...ACCOUNT_NAME_PROP,
+          required: ["property_id"],
         },
-        required: ["year"],
       },
-    },
-    {
-      name: "run_data_quality_check",
-      description:
-        "Run a full data quality diagnostic on a property before a VAM run. Checks for aggregated meters, missing electricity/gas meters, solar net metering, suspiciously low EUI (partial coverage), and manual data entry. Returns a structured report with a vamReadiness assessment.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          property_id: {
-            type: "string",
-            description: "The ESPM property ID",
+      {
+        name: "list_property_groups",
+        description:
+          "List all property groups in your account (e.g. by fund, asset type, or management style). Returns group IDs you can use with other tools.",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
+      },
+      {
+        name: "get_property_group",
+        description: "Get the name and details of a specific property group by ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            group_id: {
+              type: "string",
+              description: "The ESPM property group ID",
+            },
+            ...ACCOUNT_NAME_PROP,
           },
-          ...ACCOUNT_NAME_PROP,
+          required: ["group_id"],
         },
-        required: ["property_id"],
       },
-    },
-    {
-      name: "get_meter_consumption",
-      description:
-        "Get monthly consumption data for a specific meter, with stats on billing regularity, seasonal variation, and profile shape. Use this after run_data_quality_check to diagnose whether a gas meter has irregular billing (needs HDD smoothing), a flat/baseload-only profile (DHW, not space heating), or data gaps. Requires a meter ID from the meter list.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          meter_id: {
-            type: "string",
-            description: "The ESPM meter ID",
+      {
+        name: "get_group_score_summary",
+        description:
+          "Get a full score summary for a property group — average ENERGY STAR score, min/max, and per-property breakdown. Perfect for questions like 'what is the average score for my office properties?'",
+        inputSchema: {
+          type: "object",
+          properties: {
+            group_id: {
+              type: "string",
+              description: "The ESPM property group ID",
+            },
+            ...ACCOUNT_NAME_PROP,
           },
-          year: {
-            type: "number",
-            description: "Year to fetch consumption data for (defaults to last full year)",
-          },
-          ...ACCOUNT_NAME_PROP,
+          required: ["group_id"],
         },
-        required: ["meter_id"],
       },
-    },
-    {
-      name: "check_aggregated_meters",
-      description:
-        "Check if a property has any meters whose names look like aggregated meters (e.g. 'Whole Building', 'Building Total', 'Aggregate'). Returns the full meter list and flags suspected aggregated meters.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          property_id: {
-            type: "string",
-            description: "The ESPM property ID",
+      {
+        name: "get_portfolio_summary",
+        description:
+          "Get a high-level summary of your entire portfolio — scores, EUI, and property details across all properties (samples up to 50). Good for 'what does my portfolio look like overall?' questions.",
+        inputSchema: { type: "object", properties: { ...ACCOUNT_NAME_PROP } },
+      },
+      {
+        name: "run_data_quality_check",
+        description:
+          "Run a full data quality diagnostic on a property before a VAM run. Checks for aggregated meters, missing electricity/gas meters, solar net metering, suspiciously low EUI (partial coverage), and manual data entry. Returns a structured report with a vamReadiness assessment.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: { type: "string", description: "The ESPM property ID" },
+            ...ACCOUNT_NAME_PROP,
           },
-          ...ACCOUNT_NAME_PROP,
+          required: ["property_id"],
         },
-        required: ["property_id"],
       },
-    },
-    ...getSuspiciousDataTools(ACCOUNT_NAME_PROP),
-  ],
-}));
+      {
+        name: "get_meter_consumption",
+        description:
+          "Get monthly consumption data for a specific meter, with stats on billing regularity, seasonal variation, and profile shape. Use this after run_data_quality_check to diagnose whether a gas meter has irregular billing (needs HDD smoothing), a flat/baseload-only profile (DHW, not space heating), or data gaps. Requires a meter ID from the meter list.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            meter_id: { type: "string", description: "The ESPM meter ID" },
+            year: { type: "number", description: "Year to fetch consumption data for (defaults to last full year)" },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["meter_id"],
+        },
+      },
+      {
+        name: "check_aggregated_meters",
+        description:
+          "Check if a property has any meters whose names look like aggregated meters (e.g. 'Whole Building', 'Building Total', 'Aggregate'). Returns the full meter list and flags suspected aggregated meters.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            property_id: { type: "string", description: "The ESPM property ID" },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["property_id"],
+        },
+      },
+      ...getSuspiciousDataTools(ACCOUNT_NAME_PROP),
+      {
+        name: "get_energy_star_certification_summary",
+        description:
+          "Count which properties were actually ENERGY STAR certified in a specific year, using ESPM certification metrics rather than score alone.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            year: {
+              type: "number",
+              description: "Calendar year to check for ENERGY STAR certification, such as 2025.",
+            },
+            ...ACCOUNT_NAME_PROP,
+          },
+          required: ["year"],
+        },
+      },
+    ],
+  }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -785,15 +773,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           result = await getPortfolioSummary(args.account_name);
           break;
         case "run_data_quality_check":
-        result = await runDataQualityCheck(args.property_id, args.account_name);
-        break;
-      case "get_meter_consumption":
-        result = await getMeterConsumption(args.meter_id, args.year, args.account_name);
-        break;
-      case "check_aggregated_meters":
-        result = await checkAggregatedMeters(args.property_id, args.account_name);
-        break;
-      case "get_energy_star_certification_summary":
+          result = await runDataQualityCheck(args.property_id, args.account_name);
+          break;
+        case "get_meter_consumption":
+          result = await getMeterConsumption(args.meter_id, args.year, args.account_name);
+          break;
+        case "check_aggregated_meters":
+          result = await checkAggregatedMeters(args.property_id, args.account_name);
+          break;
+        case "get_energy_star_certification_summary":
           result = await getEnergyStarCertificationSummary(args.year, args.account_name);
           break;
         default: {
